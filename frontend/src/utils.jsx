@@ -1,18 +1,19 @@
 import React, { useEffect, useState } from 'react'
 
-export const Countdown = ({ endTime, onEnd, urgent = true }) => {
+export const Countdown = ({ endTime, startTime, onEnd, urgent = true, mode = 'end' }) => {
   const [timeLeft, setTimeLeft] = useState(0)
 
   useEffect(() => {
     const calc = () => {
-      const left = Math.max(0, endTime - Date.now())
+      const target = mode === 'start' ? startTime : endTime
+      const left = Math.max(0, target - Date.now())
       setTimeLeft(left)
       if (left === 0 && onEnd) onEnd()
     }
     calc()
     const timer = setInterval(calc, 1000)
     return () => clearInterval(timer)
-  }, [endTime])
+  }, [endTime, startTime, mode])
 
   const totalSec = Math.floor(timeLeft / 1000)
   const d = Math.floor(totalSec / 86400)
@@ -21,7 +22,7 @@ export const Countdown = ({ endTime, onEnd, urgent = true }) => {
   const s = totalSec % 60
   const isUrgent = urgent && timeLeft > 0 && timeLeft <= 60 * 1000
 
-  if (timeLeft === 0) return <span>已结束</span>
+  if (timeLeft === 0) return <span>{mode === 'start' ? '已开始' : '已结束'}</span>
 
   return (
     <div className={`countdown ${isUrgent ? 'urgent' : ''}`}>
@@ -55,7 +56,9 @@ export const StatusBadge = ({ status }) => {
   const map = {
     active: { text: '进行中', cls: 'status-active' },
     ended: { text: '已结束', cls: 'status-ended' },
-    pending: { text: '即将开始', cls: 'status-pending' }
+    pending: { text: '即将开始', cls: 'status-pending' },
+    preview: { text: '预展中', cls: 'status-preview' },
+    upcoming: { text: '敬请期待', cls: 'status-upcoming' }
   }
   const item = map[status] || map.ended
   return <span className={`status-tag ${item.cls}`}>{item.text}</span>

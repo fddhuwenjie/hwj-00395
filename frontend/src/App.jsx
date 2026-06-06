@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, Avatar, Dropdown, Button, notification, Badge, Tooltip } from 'antd'
-import { HomeOutlined, PlusOutlined, UserOutlined, LogoutOutlined, BellOutlined, HeartFilled, EyeOutlined, TrophyOutlined, ShopOutlined } from '@ant-design/icons'
+import { HomeOutlined, PlusOutlined, UserOutlined, LogoutOutlined, BellOutlined, HeartFilled, EyeOutlined, TrophyOutlined, ShopOutlined, AppstoreOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import Home from './pages/Home.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import AuctionDetail from './pages/AuctionDetail.jsx'
 import Publish from './pages/Publish.jsx'
 import Profile from './pages/Profile.jsx'
+import SpecialList from './pages/SpecialList.jsx'
+import SpecialDetail from './pages/SpecialDetail.jsx'
+import PreviewList from './pages/PreviewList.jsx'
 import { initSocket, closeSocket } from './socket.js'
 
 const { Header, Content } = Layout
@@ -48,11 +51,22 @@ const App = () => {
         onClick: () => navigate(`/auction/${data.auctionId}`)
       })
     }
+    const auctionStartHandler = (data) => {
+      notification.success({
+        message: '🔔 开拍提醒',
+        description: `您设置提醒的拍品《${data.auctionTitle}》已开始拍卖！`,
+        duration: 6,
+        className: 'toast-gold',
+        onClick: () => navigate(`/auction/${data.auctionId}`)
+      })
+    }
     socket.on('bid:outbid', outbidHandler)
     socket.on('watch:bid_notify', watchNotifyHandler)
+    socket.on('auction:started', auctionStartHandler)
     return () => {
       socket.off('bid:outbid', outbidHandler)
       socket.off('watch:bid_notify', watchNotifyHandler)
+      socket.off('auction:started', auctionStartHandler)
     }
   }, [navigate])
 
@@ -72,10 +86,13 @@ const App = () => {
 
   const menuItems = useMemo(() => [
     { key: '/', icon: <HomeOutlined />, label: <Link to="/">首页</Link> },
+    { key: '/specials', icon: <AppstoreOutlined />, label: <Link to="/specials">专场拍卖</Link> },
+    { key: '/preview', icon: <ClockCircleOutlined />, label: <Link to="/preview">预展拍品</Link> }
   ], [])
 
   const profileMenu = [
     { key: 'profile', icon: <UserOutlined />, label: <Link to="/profile">个人中心</Link> },
+    { key: 'proxy', icon: <EyeOutlined />, label: <Link to="/profile?tab=proxy">代理出价</Link> },
     { key: 'favorites', icon: <HeartFilled />, label: <Link to="/profile?tab=favorites">我的收藏</Link> },
     { key: 'watchlist', icon: <EyeOutlined />, label: <Link to="/profile?tab=watchlist">我的关注</Link> },
     { key: 'won', icon: <TrophyOutlined />, label: <Link to="/profile?tab=won">拍得商品</Link> },
@@ -86,7 +103,11 @@ const App = () => {
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: handleLogout }
   ]
 
-  const selectedKey = location.pathname === '/' ? '/' : location.pathname.startsWith('/profile') ? '/profile' : ''
+  const selectedKey = location.pathname === '/' ? '/'
+    : location.pathname.startsWith('/specials') ? '/specials'
+    : location.pathname.startsWith('/preview') ? '/preview'
+    : location.pathname.startsWith('/profile') ? '/profile'
+    : ''
 
   return (
     <Layout className="page-layout" style={{ minHeight: '100vh', background: 'transparent' }}>
@@ -138,6 +159,9 @@ const App = () => {
           <Route path="/auction/:id" element={<AuctionDetail user={user} setUser={setUser} />} />
           <Route path="/publish" element={<Publish user={user} />} />
           <Route path="/profile" element={<Profile user={user} setUser={setUser} />} />
+          <Route path="/specials" element={<SpecialList />} />
+          <Route path="/special/:id" element={<SpecialDetail />} />
+          <Route path="/preview" element={<PreviewList />} />
         </Routes>
       </Content>
     </Layout>

@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Row, Col, Card, Avatar, Button, InputNumber, Descriptions, Tag, Modal, App, Carousel, Divider, Empty, Tooltip, Tabs, Input, Rate, Form, Select, message as antdMessage } from 'antd'
-import { HeartOutlined, HeartFilled, DollarOutlined, RiseOutlined, UserOutlined, ExclamationCircleOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, FlagOutlined, SafetyCertificateOutlined, HistoryOutlined, WarningOutlined, CheckCircleFilled } from '@ant-design/icons'
-import api from '../api.js'
+import { Row, Col, Card, Avatar, Button, InputNumber, Descriptions, Tag, Modal, App, Carousel, Divider, Empty, Tooltip, Tabs, Input, Rate, Form, Select, message as antdMessage, Switch } from 'antd'
+import { HeartOutlined, HeartFilled, DollarOutlined, RiseOutlined, UserOutlined, ExclamationCircleOutlined, EyeOutlined, EyeInvisibleOutlined, StarFilled, FlagOutlined, SafetyCertificateOutlined, HistoryOutlined, WarningOutlined, CheckCircleFilled, BellOutlined, BellFilled, RobotOutlined, TrophyOutlined } from '@ant-design/icons'
+import api, { proxyBidApi, reminderApi } from '../api.js'
 import { getSocket } from '../socket.js'
 import { Countdown, formatPrice, formatTime, StatusBadge, CreditScore, CertifiedBadge, renderStars } from '../utils.jsx'
 
@@ -30,6 +30,10 @@ const AuctionDetail = ({ user, setUser }) => {
   const [reportForm] = Form.useForm()
   const [sellerReviews, setSellerReviews] = useState([])
   const [certModal, setCertModal] = useState(false)
+  const [proxyBid, setProxyBid] = useState(null)
+  const [hasReminder, setHasReminder] = useState(false)
+  const [proxyModal, setProxyModal] = useState(false)
+  const [proxyMaxPrice, setProxyMaxPrice] = useState(null)
 
   const loadAuction = async () => {
     try {
@@ -54,16 +58,20 @@ const AuctionDetail = ({ user, setUser }) => {
   const loadStatuses = async () => {
     if (!user || !auction?.sellerId) return
     try {
-      const [f, w, rs, sr] = await Promise.all([
+      const [f, w, rs, sr, pb, rm] = await Promise.all([
         api.get('/favorites').catch(() => []),
         api.get('/watchlist').catch(() => []),
         api.get(`/auctions/${id}/review-status`).catch(() => ({})),
-        api.get(`/users/${auction.sellerId}/reviews`).catch(() => [])
+        api.get(`/users/${auction.sellerId}/reviews`).catch(() => []),
+        proxyBidApi.get(id).catch(() => null),
+        reminderApi.myIds().catch(() => [])
       ])
       setFavorited(Array.isArray(f) ? f.includes(id) || f.includes(Number(id)) : false)
       setWatched(Array.isArray(w) ? w.includes(id) || w.includes(Number(id)) : false)
       setReviewStatus(rs && typeof rs === 'object' ? rs : {})
       setSellerReviews(Array.isArray(sr) ? sr : [])
+      setProxyBid(pb && pb.id ? pb : null)
+      setHasReminder(Array.isArray(rm) ? rm.includes(id) || rm.includes(Number(id)) : false)
     } catch (e) {}
   }
 
@@ -87,7 +95,8 @@ const AuctionDetail = ({ user, setUser }) => {
         nickname: data.nickname,
         avatar: data.avatar,
         price: data.price,
-        time: data.time
+        time: data.time,
+        isProxy: data.isProxy
       }, ...prev])
       setAuction(prev => prev ? { ...prev, currentPrice: data.price, bidCount: prev.bidCount + 1 } : prev)
       setBidAmount(data.price + (auction?.minIncrement || 0))
@@ -119,9 +128,56 @@ const AuctionDetail = ({ user, setUser }) => {
     }
   }, [id, auction, endTime])
 
+  const handleReminder = async () => {
+    if (!user) {
+      modal.confirm({ title: '请先登录', okText: '去登录', onOk: () => navigate('/login') })
+      return
+    }
+    try {
+      const res = await reminderApi.toggle(id)
+      setHasReminder(res.set)
+      message.success(res.set ? '已设置开拍提醒，开拍时会通知您' : '已取消开拍提醒')
+    } catch (e) {}
+  }
+
+  const handleSetProxy = async () => {
+    if (!user) {
+      modal.confirm({ title: '请先登录', okText: '去登录', onOk: () => navigate('/login') })
+      return
+    }
+    if (auction?.sellerId === user?.id) {
+      message.warning('不能对自己的拍品设置代理出价')
+      return
+    }
+    if (!proxyMaxPrice || proxyMaxPrice < minBid) {
+      message.warning(`代理出价上限必须不低于 ${formatPrice(minBid)}`)
+      return
+    }
+    try {
+      const res = await proxyBidApi.set(id, proxyMaxPrice)
+      setProxyBid(res)
+      setProxyModal(false)
+      message.success(`代理出价已设置，上限 ${formatPrice(proxyMaxPrice)}`)
+    } catch (e) {
+      message.error(e.error || '设置失败')
+    }
+  }
+
+  const handleCancelProxy = async () => {
+    try {
+      await proxyBidApi.cancel(id)
+      setProxyBid(null)
+      message.success('已取消代理出价')
+    } catch (e) {}
+  }
+
   const handleBid = async (buyNow = false, confirmed = false) => {
     if (!user) {
       modal.confirm({ title: '请先登录', content: '出价需要登录账户', okText: '去登录', onOk: () => navigate('/login') })
+      return
+    }
+    if (auction?.status === 'preview' || auction?.status === 'upcoming') {
+      message.warning('拍品正在预展中，尚未开始出价')
       return
     }
     if (auction?.sellerId === user?.id) {
@@ -399,6 +455,13 @@ const AuctionDetail = ({ user, setUser }) => {
         <Descriptions column={2} bordered size="middle" className="detail-descriptions">
           <Descriptions.Item label="分类"><span className="gold-tag">{auction.category}</span></Descriptions.Item>
           <Descriptions.Item label="状态"><StatusBadge status={auction.status} /></Descriptions.Item>
+          {auction.specialName && (
+            <Descriptions.Item label="所属专场" span={2}>
+              <Tag color="gold" icon={<TrophyOutlined />} style={{ cursor: 'pointer' }} onClick={() => navigate(`/special/${auction.specialId}`)}>
+                🎭 {auction.specialName}
+              </Tag>
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="起拍价">{formatPrice(auction.startPrice)}</Descriptions.Item>
           <Descriptions.Item label="加价幅度">{formatPrice(auction.minIncrement)}</Descriptions.Item>
           <Descriptions.Item label="保证金">{formatPrice(auction.deposit)}</Descriptions.Item>
@@ -474,7 +537,10 @@ const AuctionDetail = ({ user, setUser }) => {
                 <div className="bid-record" key={b.id}>
                   <Avatar src={b.avatar} size={36} style={{ border: '1px solid rgba(212, 175, 55, 0.2)' }} />
                   <div className="info">
-                    <div className="nickname">{b.nickname}</div>
+                    <div className="nickname" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {b.nickname}
+                      {b.isProxy && <Tag color="purple" style={{ fontSize: 11 }} icon={<RobotOutlined />}>代理出价</Tag>}
+                    </div>
                     <div className="time">{formatTime(b.time)}</div>
                   </div>
                   <div className="price">{formatPrice(b.price)}</div>
@@ -490,6 +556,9 @@ const AuctionDetail = ({ user, setUser }) => {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <StatusBadge status={auction.status} />
                 {auction.hasCertification && <CertifiedBadge />}
+                {auction.specialName && (
+                  <Tag color="gold" style={{ fontSize: 11 }} icon={<TrophyOutlined />}>🎭 {auction.specialName}</Tag>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 4 }}>
                 <Tooltip title={favorited ? '取消收藏' : '收藏'}>
@@ -510,6 +579,15 @@ const AuctionDetail = ({ user, setUser }) => {
                     {auction.watcherCount || 0}
                   </Button>
                 </Tooltip>
+                {(auction.status === 'preview' || auction.status === 'upcoming') && (
+                  <Tooltip title={hasReminder ? '取消开拍提醒' : '开拍提醒'}>
+                    <Button
+                      type="text"
+                      icon={hasReminder ? <BellFilled style={{ color: '#ffa502' }} /> : <BellOutlined />}
+                      onClick={handleReminder}
+                    />
+                  </Tooltip>
+                )}
               </div>
             </div>
 
@@ -559,10 +637,62 @@ const AuctionDetail = ({ user, setUser }) => {
                   </>
                 )}
               </div>
+            ) : auction.status === 'preview' || auction.status === 'upcoming' ? (
+              <div>
+                <div style={{ color: '#b8b8b8', marginBottom: 8 }}>
+                  {auction.status === 'preview' ? '预展起始价' : '起始价'}
+                </div>
+                <div className="current-price">{formatPrice(auction.startPrice)}</div>
+
+                <div className="countdown-panel">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, alignItems: 'center' }}>
+                    <span style={{ color: '#b8b8b8' }}>
+                      {auction.status === 'preview' ? '距开拍' : '距开始'}
+                    </span>
+                    {auction.status === 'preview' && <Tag color="blue" style={{ fontSize: 11 }}>预展中 · 可查看不可出价</Tag>}
+                  </div>
+                  <Countdown startTime={auction.startTime} mode="start" large />
+                  <div style={{ color: '#b8b8b8', fontSize: 12, marginTop: 10, lineHeight: 1.6 }}>
+                    <ExclamationCircleOutlined style={{ color: '#ffa502' }} /> {auction.status === 'preview' ? '开拍前可查看详情，开拍后可以出价' : '距离开拍还有7天以上，开拍前7天进入预展'}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 16, padding: 16, background: 'rgba(212, 175, 55, 0.06)', borderRadius: 8, border: '1px solid rgba(212, 175, 55, 0.15)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ color: '#f5f5f5', fontWeight: 500 }}>
+                        <BellOutlined style={{ color: '#ffa502' }} /> 开拍提醒
+                      </div>
+                      <div style={{ color: '#6c6c7a', fontSize: 12, marginTop: 4 }}>
+                        {hasReminder ? '已开启，开拍时会通知您' : '开启后，开拍时将通过站内消息通知您'}
+                      </div>
+                    </div>
+                    <Switch checked={hasReminder} onChange={handleReminder} />
+                  </div>
+                </div>
+
+                <Divider />
+                <div style={{ fontSize: 13, color: '#b8b8b8', marginBottom: 12 }}>卖家信用</div>
+                <div>
+                  <Avatar size={28} src={auction.sellerAvatar} style={{ marginRight: 8, verticalAlign: 'middle' }} />
+                  <span style={{ color: '#f5f5f5' }}>{auction.sellerNickname}</span>
+                  <span style={{ marginLeft: 10 }}><CreditScore score={auction.sellerCreditScore} /></span>
+                </div>
+              </div>
             ) : (
               <div>
                 <div style={{ color: '#b8b8b8', marginBottom: 8 }}>当前价格</div>
                 <div className="current-price">{formatPrice(auction.currentPrice)}</div>
+
+                {proxyBid && (
+                  <div style={{ marginTop: 8, padding: 10, background: 'rgba(155, 89, 182, 0.1)', borderRadius: 6, border: '1px solid rgba(155, 89, 182, 0.25)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <Tag color="purple" icon={<RobotOutlined />} style={{ fontSize: 11 }}>代理出价中</Tag>
+                      <div style={{ color: '#b8b8b8', fontSize: 12, marginTop: 4 }}>上限：<span style={{ color: '#d4af37' }}>{formatPrice(proxyBid.maxPrice)}</span></div>
+                    </div>
+                    <Button size="small" danger type="text" onClick={handleCancelProxy}>取消</Button>
+                  </div>
+                )}
 
                 <div className="countdown-panel">
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, alignItems: 'center' }}>
@@ -604,6 +734,15 @@ const AuctionDetail = ({ user, setUser }) => {
                     >
                       出 价
                     </Button>
+                    <Button
+                      block
+                      className="big-btn"
+                      style={{ marginTop: 8, background: 'rgba(155, 89, 182, 0.15)', border: '1px solid rgba(155, 89, 182, 0.4)', color: '#c586c0' }}
+                      icon={<RobotOutlined />}
+                      onClick={() => { setProxyMaxPrice(auction.currentPrice + auction.minIncrement * 5); setProxyModal(true) }}
+                    >
+                      {proxyBid ? '修改代理出价' : '设置代理出价（自动跟价）'}
+                    </Button>
                     {auction.buyNowPrice && (
                       <Button
                         block
@@ -620,6 +759,7 @@ const AuctionDetail = ({ user, setUser }) => {
                       <div>• 出价前将冻结保证金 <b style={{ color: '#b8b8b8' }}>{formatPrice(auction.deposit)}</b></div>
                       <div>• 拍得后扣除尾款，未拍得保证金自动退回</div>
                       <div>• 账户余额：<b style={{ color: '#d4af37' }}>{user ? formatPrice(user.balance) : '-'}</b></div>
+                      <div style={{ color: '#c586c0' }}>• 代理出价：系统会自动以最小加价幅度跟价，直到上限</div>
                       {user && user.creditScore < 3 && (
                         <div style={{ color: '#ff4757', marginTop: 8, padding: 8, background: 'rgba(255, 71, 87, 0.08)', borderRadius: 4 }}>
                           <WarningOutlined /> 您的信用分为 {user.creditScore.toFixed(1)}，出价需二次确认
@@ -676,6 +816,42 @@ const AuctionDetail = ({ user, setUser }) => {
             <TextArea rows={4} placeholder="请详细描述违规行为..." maxLength={500} showCount />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={<span style={{ fontFamily: '"Playfair Display", serif', fontSize: 18 }}><RobotOutlined style={{ color: '#c586c0' }} /> 设置代理出价</span>}
+        open={proxyModal}
+        onCancel={() => setProxyModal(false)}
+        onOk={handleSetProxy}
+        okText="确认设置"
+        okButtonProps={{ style: { background: 'linear-gradient(135deg, #9b59b6 0%, #6c3483 100%)', border: 'none' } }}
+        width={460}
+      >
+        <div style={{ color: '#b8b8b8', fontSize: 13, lineHeight: 1.8, padding: 12, background: 'rgba(155, 89, 182, 0.06)', borderRadius: 6, border: '1px solid rgba(155, 89, 182, 0.15)', marginBottom: 16 }}>
+          <div>🤖 当有其他买家出价时，系统会自动以<b style={{ color: '#c586c0' }}>最小加价幅度</b>替您跟价</div>
+          <div>直到达到您设置的<b style={{ color: '#d4af37' }}>上限价格</b>为止，帮您省去手动出价的麻烦</div>
+          {proxyBid && <div style={{ marginTop: 6, color: '#ffa502' }}>⚠ 当前已有代理出价：上限 {formatPrice(proxyBid.maxPrice)}，设置新的将覆盖原有设置</div>}
+        </div>
+        <div style={{ marginBottom: 8, color: '#b8b8b8' }}>
+          当前价：<b style={{ color: '#f5f5f5' }}>{formatPrice(auction?.currentPrice)}</b>
+          <span style={{ margin: '0 12px', color: '#6c6c7a' }}>|</span>
+          最低出价：<b style={{ color: '#d4af37' }}>{formatPrice(minBid)}</b>
+        </div>
+        <div style={{ color: '#b8b8b8', marginBottom: 8 }}>代理出价上限</div>
+        <InputNumber
+          size="large"
+          style={{ width: '100%' }}
+          min={minBid}
+          step={auction?.minIncrement || 100}
+          value={proxyMaxPrice}
+          onChange={setProxyMaxPrice}
+          formatter={v => `¥ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+          parser={v => v.replace(/[^\d]/g, '')}
+          className="luxury-input"
+        />
+        <div style={{ color: '#6c6c7a', fontSize: 12, marginTop: 10 }}>
+          建议设置高于当前价和您心理预期的价格，系统不会一开始就出到上限
+        </div>
       </Modal>
 
       <Modal

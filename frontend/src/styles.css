@@ -148,6 +148,16 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--warning);
   border: 1px solid rgba(255, 165, 2, 0.3);
 }
+.status-preview {
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.18) 0%, rgba(52, 152, 219, 0.05) 100%);
+  color: #3498db;
+  border: 1px solid rgba(52, 152, 219, 0.35);
+}
+.status-upcoming {
+  background: linear-gradient(135deg, rgba(155, 89, 182, 0.15) 0%, rgba(155, 89, 182, 0.05) 100%);
+  color: #9b59b6;
+  border: 1px solid rgba(155, 89, 182, 0.3);
+}
 
 .gold-tag {
   display: inline-block;
@@ -706,3 +716,22 @@ h1, h2, h3, h4, h5, h6 {
 .ant-list-item-meta-description { color: var(--text-secondary) !important; }
 
 .ant-rate-star { color: var(--accent-gold) !important; }
+
+.special-card {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  cursor: pointer;
+}
+.special-card:hover {
+  transform: translateY(-6px) scale(1.01);
+  border-color: var(--accent-gold) !important;
+  box-shadow: 0 12px 40px rgba(212, 175, 55, 0.15), 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+.special-card .ant-card-body { padding: 16px !important; }
+.special-card .ant-card-cover img { transition: transform 0.6s; }
+.special-card:hover .ant-card-cover img { transform: scale(1.08); }
+.special-card .ant-card-cover { overflow: hidden; }
+

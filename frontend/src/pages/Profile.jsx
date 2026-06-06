@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Row, Col, Card, Tabs, Avatar, Button, Table, Tag, Modal, App, Empty, List, Divider, InputNumber, Rate } from 'antd'
-import { UserOutlined, PlusOutlined, DollarOutlined, TrophyOutlined, RiseOutlined, ShoppingCartOutlined, HistoryOutlined, HeartOutlined, StarFilled, SafetyCertificateOutlined, EyeOutlined } from '@ant-design/icons'
-import api from '../api.js'
+import { Row, Col, Card, Tabs, Avatar, Button, Table, Tag, Modal, App, Empty, List, Divider, InputNumber, Rate, Tooltip } from 'antd'
+import { UserOutlined, PlusOutlined, DollarOutlined, TrophyOutlined, RiseOutlined, ShoppingCartOutlined, HistoryOutlined, HeartOutlined, StarFilled, SafetyCertificateOutlined, EyeOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons'
+import api, { proxyBidApi } from '../api.js'
 import { formatPrice, formatTime, StatusBadge, Countdown, CreditScore, CertifiedBadge, renderStars } from '../utils.jsx'
 
 const Profile = ({ user, setUser }) => {
@@ -21,10 +21,11 @@ const Profile = ({ user, setUser }) => {
   const [historyAuction, setHistoryAuction] = useState(null)
   const [creditScore, setCreditScore] = useState(5)
   const [activeKey, setActiveKey] = useState('published')
+  const [proxyBids, setProxyBids] = useState([])
 
   const loadAll = async () => {
     try {
-      const [a, b, w, t, f, wt, mr, cr] = await Promise.all([
+      const [a, b, w, t, f, wt, mr, cr, pb] = await Promise.all([
         api.get('/my/auctions').catch(() => []),
         api.get('/my/bids').catch(() => []),
         api.get('/my/won').catch(() => []),
@@ -32,7 +33,8 @@ const Profile = ({ user, setUser }) => {
         api.get('/favorites').catch(() => []),
         api.get('/watchlist').catch(() => []),
         api.get(`/users/${user.id}/reviews`).catch(() => []),
-        api.get(`/users/${user.id}/credit`).catch(() => ({ score: 5 }))
+        api.get(`/users/${user.id}/credit`).catch(() => ({ score: 5 })),
+        proxyBidApi.myList().catch(() => [])
       ])
       setMyAuctions(Array.isArray(a) ? a : [])
       setMyBids(Array.isArray(b) ? b : [])
@@ -42,6 +44,7 @@ const Profile = ({ user, setUser }) => {
       setWatchlist(Array.isArray(wt) ? wt : [])
       setMyReviews(Array.isArray(mr) ? mr : [])
       setCreditScore(cr?.score ?? 5)
+      setProxyBids(Array.isArray(pb) ? pb : [])
     } catch (e) {
       if (e.error === '未登录') navigate('/login')
     }
@@ -71,6 +74,22 @@ const Profile = ({ user, setUser }) => {
       setBidHistory(bids)
       setHistoryAuction(auction)
     } catch (e) {}
+  }
+
+  const cancelProxyBid = async (pb) => {
+    modal.confirm({
+      title: '确认取消代理出价？',
+      content: `拍品：${pb.auction?.title || pb.auctionTitle}\n上限：${formatPrice(pb.maxPrice)}`,
+      onOk: async () => {
+        try {
+          await proxyBidApi.cancel(pb.auctionId || pb.auction_id)
+          message.success('已取消代理出价')
+          loadAll()
+        } catch (e) {
+          message.error(e.error || '取消失败')
+        }
+      }
+    })
   }
 
   const txColumns = [
@@ -143,6 +162,78 @@ const Profile = ({ user, setUser }) => {
     },
     {
       key: 'won', label: <span><TrophyOutlined /> 我拍得的 ({(myWon || []).length})</span>, children: renderAuctionList(myWon, '还没有拍得任何商品')
+    },
+    {
+      key: 'proxy', label: <span><RobotOutlined /> 代理出价 ({(proxyBids || []).length})</span>, children: (proxyBids || []).length === 0 ? (
+        <Empty description="暂无代理出价，去拍品详情页设置自动跟价">
+          <Button className="gold-btn" onClick={() => navigate('/')}>去竞拍</Button>
+        </Empty>
+      ) : (
+        <Table
+          rowKey="id"
+          pagination={{ pageSize: 8 }}
+          dataSource={proxyBids || []}
+          columns={[
+            {
+              title: '拍品',
+              dataIndex: 'auction',
+              render: (v, r) => {
+                const auction = v || r
+                return (
+                  <a onClick={() => navigate(`/auction/${auction.id || r.auctionId}`)} style={{ color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {auction.images?.[0] && <img src={auction.images[0]} style={{ width: 48, height: 48, borderRadius: 6, objectFit: 'cover' }} />}
+                    <span>{auction.title || r.auctionTitle}</span>
+                  </a>
+                )
+              }
+            },
+            { title: '分类', dataIndex: 'auction', width: 100, render: (v, r) => <span className="gold-tag">{v?.category || r.category}</span> },
+            {
+              title: '当前价',
+              dataIndex: 'auction',
+              width: 140,
+              render: (v, r) => <b style={{ color: '#d4af37' }}>{formatPrice(v?.currentPrice || r.currentPrice)}</b>
+            },
+            {
+              title: '代理上限',
+              dataIndex: 'maxPrice',
+              width: 140,
+              render: v => <Tag color="purple" icon={<RobotOutlined />} style={{ fontSize: 12 }}>{formatPrice(v)}</Tag>
+            },
+            {
+              title: '拍品状态',
+              dataIndex: 'auction',
+              width: 110,
+              render: v => <StatusBadge status={v?.status || 'active'} />
+            },
+            {
+              title: '创建时间',
+              dataIndex: 'createdAt',
+              width: 160,
+              render: v => formatTime(v)
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 100,
+              render: s => s === 'cancelled'
+                ? <Tag color="default">已取消</Tag>
+                : s === 'completed'
+                  ? <Tag color="blue">已完成</Tag>
+                  : <Tag color="green">生效中</Tag>
+            },
+            {
+              title: '操作',
+              width: 100,
+              render: (_, r) => r.status !== 'active' ? null : (
+                <Tooltip title="取消代理出价">
+                  <Button type="text" danger icon={<StopOutlined />} onClick={() => cancelProxyBid(r)}>取消</Button>
+                </Tooltip>
+              )
+            }
+          ]}
+        />
+      )
     },
     {
       key: 'favorites', label: <span><HeartOutlined /> 我的收藏 ({(favorites || []).length})</span>, children: renderAuctionList(favorites, '还没有收藏任何拍品')

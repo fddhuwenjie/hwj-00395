@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Row, Col, Card, Tabs, Button, Empty, Tag, Avatar, Carousel, Tooltip, message } from 'antd'
-import { FireOutlined, EyeOutlined, RiseOutlined, DollarOutlined, HeartOutlined, HeartFilled, StarFilled, TrophyFilled } from '@ant-design/icons'
+import { FireOutlined, EyeOutlined, RiseOutlined, DollarOutlined, HeartOutlined, HeartFilled, StarFilled, TrophyFilled, BellOutlined, BellFilled, TrophyOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import api from '../api.js'
+import api, { specialApi, previewApi, reminderApi } from '../api.js'
 import { getSocket } from '../socket.js'
-import { Countdown, formatPrice, StatusBadge, CreditScore, CertifiedBadge } from '../utils.jsx'
+import { Countdown, formatPrice, formatTime, StatusBadge, CreditScore, CertifiedBadge } from '../utils.jsx'
 
 const Home = ({ user }) => {
   const navigate = useNavigate()
@@ -14,27 +14,36 @@ const Home = ({ user }) => {
   const [tabKey, setTabKey] = useState('active')
   const [favoriteIds, setFavoriteIds] = useState([])
   const [watchIds, setWatchIds] = useState([])
+  const [specials, setSpecials] = useState([])
+  const [previewAuctions, setPreviewAuctions] = useState([])
+  const [reminderIds, setReminderIds] = useState([])
 
   const loadMyLists = async () => {
     if (!user) return
     try {
-      const [f, w] = await Promise.all([
+      const [f, w, r] = await Promise.all([
         api.get('/favorites').catch(() => []),
-        api.get('/watchlist').catch(() => [])
+        api.get('/watchlist').catch(() => []),
+        reminderApi.myIds().catch(() => [])
       ])
       setFavoriteIds(Array.isArray(f) ? f : [])
       setWatchIds(Array.isArray(w) ? w : [])
+      setReminderIds(Array.isArray(r) ? r : [])
     } catch (e) {}
   }
 
   const loadData = async () => {
     try {
-      const [s, a] = await Promise.all([
+      const [s, a, sp, pr] = await Promise.all([
         api.get('/stats').catch(() => null),
-        api.get('/auctions').catch(() => [])
+        api.get('/auctions').catch(() => []),
+        specialApi.list().catch(() => []),
+        previewApi.list().catch(() => [])
       ])
       setStats(s && typeof s === 'object' ? s : null)
       setAuctions(Array.isArray(a) ? a : [])
+      setSpecials(Array.isArray(sp) ? sp : [])
+      setPreviewAuctions(Array.isArray(pr) ? pr : [])
     } catch (e) {
       console.error(e)
     }
@@ -48,9 +57,11 @@ const Home = ({ user }) => {
       const handler = () => loadData()
       socket.on('bid:new', handler)
       socket.on('auction:timers', handler)
+      socket.on('auction:started', handler)
       return () => {
         socket.off('bid:new', handler)
         socket.off('auction:timers', handler)
+        socket.off('auction:started', handler)
       }
     }
   }, [user])
@@ -74,6 +85,16 @@ const Home = ({ user }) => {
       setWatchIds(prev => res.watched ? [...prev, auctionId] : prev.filter(id => id !== auctionId))
       setAuctions(prev => prev.map(a => a.id === auctionId ? { ...a, watcherCount: Math.max(0, a.watcherCount + (res.watched ? 1 : -1)) } : a))
       message.success(res.watched ? '已关注' : '已取消关注')
+    } catch (e) {}
+  }
+
+  const toggleReminder = async (auctionId, e) => {
+    e.stopPropagation()
+    if (!user) { message.warning('请先登录'); return }
+    try {
+      const res = await reminderApi.toggle(auctionId)
+      setReminderIds(prev => res.set ? [...prev, auctionId] : prev.filter(id => id !== auctionId))
+      message.success(res.set ? '已设置开拍提醒' : '已取消开拍提醒')
     } catch (e) {}
   }
 
@@ -133,9 +154,10 @@ const Home = ({ user }) => {
     }]
   } : null
 
-  const AuctionCard = ({ a, showWatchFav = true }) => {
+  const AuctionCard = ({ a, showWatchFav = true, showReminder = false }) => {
     const isFav = favoriteIds.includes(a.id)
     const isWatch = watchIds.includes(a.id)
+    const hasReminder = reminderIds.includes(a.id)
     return (
       <Card
         className="auction-card"
@@ -160,6 +182,13 @@ const Home = ({ user }) => {
                       {isWatch ? <StarFilled /> : <EyeOutlined />}
                     </div>
                   </Tooltip>
+                  {showReminder && (
+                    <Tooltip title={hasReminder ? '取消开拍提醒' : '开拍提醒'}>
+                      <div className="action-btn" onClick={(e) => toggleReminder(a.id, e)}>
+                        {hasReminder ? <BellFilled style={{ color: '#ffa502' }} /> : <BellOutlined />}
+                      </div>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             )}
@@ -180,9 +209,13 @@ const Home = ({ user }) => {
         <div className="price" style={{ marginTop: 12 }}>{formatPrice(a.currentPrice)}</div>
         <div className="meta">
           <span style={{ display: 'flex', gap: 8 }}>
-            <TrophyFilled style={{ color: '#d4af37' }} /> {a.bidCount} 次出价
+            <TrophyOutlined style={{ color: '#d4af37' }} /> {a.bidCount} 次出价
           </span>
-          {a.status === 'active' ? <Countdown endTime={a.endTime} /> : <span>已结束</span>}
+          {a.status === 'active'
+            ? <Countdown endTime={a.endTime} />
+            : a.status === 'preview' || a.status === 'upcoming'
+              ? <Countdown startTime={a.startTime} mode="start" />
+              : <span>已结束</span>}
         </div>
       </Card>
     )
@@ -261,6 +294,86 @@ const Home = ({ user }) => {
               {activeAuctions.slice(0, 12).map(a => (
                 <div key={a.id} style={{ width: 280, flexShrink: 0 }}>
                   <AuctionCard a={a} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {specials.length > 0 && (
+        <div className="horizontal-scroll-section">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="section-title">🎭 热门专场</div>
+            <Button type="link" onClick={() => navigate('/specials')} style={{ color: '#d4af37' }}>查看全部 →</Button>
+          </div>
+          <div className="scroll-container">
+            <div style={{ display: 'flex', gap: 20, minWidth: 'min-content' }}>
+              {specials.slice(0, 6).map(sp => {
+                const isActive = Date.now() >= sp.startTime && Date.now() < sp.endTime
+                const isUpcoming = Date.now() < sp.startTime
+                return (
+                  <Card
+                    key={sp.id}
+                    className="special-card"
+                    hoverable
+                    style={{ width: 320, flexShrink: 0 }}
+                    onClick={() => navigate(`/special/${sp.id}`)}
+                    cover={
+                      <div style={{ position: 'relative', height: 160, overflow: 'hidden' }}>
+                        <img src={sp.coverImage} alt={sp.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        <div style={{
+                          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                          background: 'linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.7) 100%)'
+                        }} />
+                        <div style={{ position: 'absolute', top: 10, right: 10 }}>
+                          <Tag color={isActive ? 'green' : isUpcoming ? 'blue' : 'default'} style={{ fontSize: 11 }}>
+                            {isActive ? '进行中' : isUpcoming ? '即将开始' : '已结束'}
+                          </Tag>
+                        </div>
+                        <div style={{ position: 'absolute', bottom: 10, left: 12, right: 12 }}>
+                          <div style={{ color: '#fff', fontSize: 16, fontWeight: 600, fontFamily: '"Playfair Display", serif' }}>
+                            {sp.name}
+                          </div>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div style={{ color: '#b8b8b8', fontSize: 12, lineHeight: 1.6, height: 36, overflow: 'hidden' }}>
+                      {sp.description}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+                      <div style={{ fontSize: 13 }}>
+                        <TrophyOutlined style={{ color: '#d4af37', marginRight: 4 }} />
+                        <span style={{ color: '#f5f5f5' }}>{sp.auctionCount || 0} 件拍品</span>
+                      </div>
+                      <div style={{ marginLeft: 'auto' }}>
+                        {isUpcoming
+                          ? <Countdown startTime={sp.startTime} mode="start" />
+                          : isActive
+                            ? <Countdown endTime={sp.endTime} />
+                            : <span style={{ color: '#6c6c7a', fontSize: 12 }}>已结束</span>}
+                      </div>
+                    </div>
+                  </Card>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewAuctions.length > 0 && (
+        <div className="horizontal-scroll-section">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="section-title">🕒 即将开拍 · 预展中</div>
+            <Button type="link" onClick={() => navigate('/preview')} style={{ color: '#d4af37' }}>全部预展 →</Button>
+          </div>
+          <div className="scroll-container">
+            <div style={{ display: 'flex', gap: 20, minWidth: 'min-content' }}>
+              {previewAuctions.slice(0, 8).map(a => (
+                <div key={a.id} style={{ width: 280, flexShrink: 0 }}>
+                  <AuctionCard a={a} showReminder={true} />
                 </div>
               ))}
             </div>

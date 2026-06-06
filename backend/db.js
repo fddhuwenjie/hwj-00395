@@ -28,6 +28,7 @@ const initTables = () => {
       description TEXT,
       images TEXT,
       category TEXT,
+      special_id TEXT,
       start_price REAL NOT NULL,
       min_increment REAL NOT NULL,
       deposit REAL NOT NULL,
@@ -44,7 +45,8 @@ const initTables = () => {
       winner_id TEXT,
       final_price REAL,
       created_at INTEGER NOT NULL,
-      FOREIGN KEY (seller_id) REFERENCES users(id)
+      FOREIGN KEY (seller_id) REFERENCES users(id),
+      FOREIGN KEY (special_id) REFERENCES auction_specials(id)
     );
 
     CREATE TABLE IF NOT EXISTS bids (
@@ -53,6 +55,7 @@ const initTables = () => {
       user_id TEXT NOT NULL,
       price REAL NOT NULL,
       time INTEGER NOT NULL,
+      is_proxy INTEGER DEFAULT 0,
       FOREIGN KEY (auction_id) REFERENCES auctions(id),
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
@@ -137,6 +140,54 @@ const initTables = () => {
       FOREIGN KEY (auction_id) REFERENCES auctions(id),
       FOREIGN KEY (bidder_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS auction_specials (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      cover_image TEXT,
+      start_time INTEGER NOT NULL,
+      end_time INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS proxy_bids (
+      id TEXT PRIMARY KEY,
+      auction_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      max_price REAL NOT NULL,
+      status TEXT DEFAULT 'active',
+      created_at INTEGER NOT NULL,
+      cancelled_at INTEGER,
+      UNIQUE(user_id, auction_id),
+      FOREIGN KEY (auction_id) REFERENCES auctions(id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS reminders (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      auction_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      notified INTEGER DEFAULT 0,
+      UNIQUE(user_id, auction_id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (auction_id) REFERENCES auctions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT,
+      auction_id TEXT,
+      read INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
   `);
 };
 
@@ -164,6 +215,7 @@ const rowToAuction = (row) => {
     description: row.description,
     images: row.images ? JSON.parse(row.images) : [],
     category: row.category,
+    specialId: row.special_id,
     startPrice: row.start_price,
     minIncrement: row.min_increment,
     deposit: row.deposit,
@@ -179,6 +231,58 @@ const rowToAuction = (row) => {
     status: row.status,
     winnerId: row.winner_id,
     finalPrice: row.final_price,
+    createdAt: row.created_at
+  };
+};
+
+const rowToAuctionSpecial = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    coverImage: row.cover_image,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+};
+
+const rowToProxyBid = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    auctionId: row.auction_id,
+    userId: row.user_id,
+    maxPrice: row.max_price,
+    status: row.status,
+    createdAt: row.created_at,
+    cancelledAt: row.cancelled_at
+  };
+};
+
+const rowToReminder = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    auctionId: row.auction_id,
+    createdAt: row.created_at,
+    notified: !!row.notified
+  };
+};
+
+const rowToNotification = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    type: row.type,
+    title: row.title,
+    content: row.content,
+    auctionId: row.auction_id,
+    read: !!row.read,
     createdAt: row.created_at
   };
 };
@@ -246,7 +350,8 @@ const rowToBid = (row) => {
     auctionId: row.auction_id,
     userId: row.user_id,
     price: row.price,
-    time: row.time
+    time: row.time,
+    isProxy: !!row.is_proxy
   };
 };
 
@@ -283,6 +388,8 @@ const UserDAO = {
 const AuctionDAO = {
   getAll: () => db.prepare('SELECT * FROM auctions ORDER BY created_at DESC').all().map(rowToAuction),
   getById: (id) => rowToAuction(db.prepare('SELECT * FROM auctions WHERE id = ?').get(id)),
+  getBySpecial: (specialId) =>
+    db.prepare('SELECT * FROM auctions WHERE special_id = ? ORDER BY created_at DESC').all(specialId).map(rowToAuction),
   create: (auction) => {
     const params = {
       id: auction.id,
@@ -290,6 +397,7 @@ const AuctionDAO = {
       description: auction.description || null,
       images: JSON.stringify(auction.images || []),
       category: auction.category || null,
+      specialId: auction.specialId || null,
       startPrice: auction.startPrice,
       minIncrement: auction.minIncrement,
       deposit: auction.deposit,
@@ -307,10 +415,10 @@ const AuctionDAO = {
       finalPrice: auction.finalPrice || null,
       createdAt: auction.createdAt
     };
-    db.prepare(`INSERT INTO auctions (id, title, description, images, category, start_price, min_increment,
+    db.prepare(`INSERT INTO auctions (id, title, description, images, category, special_id, start_price, min_increment,
                 deposit, start_time, end_time, buy_now_price, seller_id, current_price, bid_count,
                 watcher_count, favorite_count, delay_count, status, winner_id, final_price, created_at)
-                VALUES (@id, @title, @description, @images, @category, @startPrice, @minIncrement,
+                VALUES (@id, @title, @description, @images, @category, @specialId, @startPrice, @minIncrement,
                 @deposit, @startTime, @endTime, @buyNowPrice, @sellerId, @currentPrice, @bidCount,
                 @watcherCount, @favoriteCount, @delayCount, @status, @winnerId, @finalPrice, @createdAt)`).run(params);
     return auction;
@@ -322,6 +430,7 @@ const AuctionDAO = {
       description: auction.description || null,
       images: JSON.stringify(auction.images || []),
       category: auction.category || null,
+      specialId: auction.specialId || null,
       startPrice: auction.startPrice,
       minIncrement: auction.minIncrement,
       deposit: auction.deposit,
@@ -338,12 +447,122 @@ const AuctionDAO = {
       finalPrice: auction.finalPrice || null
     };
     db.prepare(`UPDATE auctions SET title=@title, description=@description, images=@images,
-                category=@category, start_price=@startPrice, min_increment=@minIncrement,
+                category=@category, special_id=@specialId, start_price=@startPrice, min_increment=@minIncrement,
                 deposit=@deposit, start_time=@startTime, end_time=@endTime, buy_now_price=@buyNowPrice,
                 current_price=@currentPrice, bid_count=@bidCount, watcher_count=@watcherCount,
                 favorite_count=@favoriteCount, delay_count=@delayCount,
                 status=@status, winner_id=@winnerId, final_price=@finalPrice WHERE id=@id`).run(params);
   }
+};
+
+const AuctionSpecialDAO = {
+  getAll: () => db.prepare('SELECT * FROM auction_specials ORDER BY start_time DESC').all().map(rowToAuctionSpecial),
+  getById: (id) => rowToAuctionSpecial(db.prepare('SELECT * FROM auction_specials WHERE id = ?').get(id)),
+  create: (sp) => {
+    const params = {
+      id: sp.id,
+      name: sp.name,
+      description: sp.description || null,
+      coverImage: sp.coverImage || null,
+      startTime: sp.startTime,
+      endTime: sp.endTime,
+      createdBy: sp.createdBy,
+      createdAt: sp.createdAt
+    };
+    db.prepare(`INSERT INTO auction_specials (id, name, description, cover_image, start_time, end_time, created_by, created_at)
+                VALUES (@id, @name, @description, @coverImage, @startTime, @endTime, @createdBy, @createdAt)`).run(params);
+    return sp;
+  },
+  update: (sp) => {
+    const params = {
+      id: sp.id,
+      name: sp.name,
+      description: sp.description || null,
+      coverImage: sp.coverImage || null,
+      startTime: sp.startTime,
+      endTime: sp.endTime
+    };
+    db.prepare(`UPDATE auction_specials SET name=@name, description=@description, cover_image=@coverImage,
+                start_time=@startTime, end_time=@endTime WHERE id=@id`).run(params);
+  },
+  delete: (id) => db.prepare('DELETE FROM auction_specials WHERE id = ?').run(id)
+};
+
+const ProxyBidDAO = {
+  getAll: () => db.prepare('SELECT * FROM proxy_bids ORDER BY created_at DESC').all().map(rowToProxyBid),
+  getById: (id) => rowToProxyBid(db.prepare('SELECT * FROM proxy_bids WHERE id = ?').get(id)),
+  getByUser: (userId) =>
+    db.prepare('SELECT * FROM proxy_bids WHERE user_id = ? ORDER BY created_at DESC').all(userId).map(rowToProxyBid),
+  getByAuction: (auctionId) =>
+    db.prepare('SELECT * FROM proxy_bids WHERE auction_id = ? AND status = ? ORDER BY max_price DESC').all(auctionId, 'active').map(rowToProxyBid),
+  getByUserAndAuction: (userId, auctionId) =>
+    rowToProxyBid(db.prepare('SELECT * FROM proxy_bids WHERE user_id = ? AND auction_id = ?').get(userId, auctionId)),
+  create: (pb) => {
+    const params = {
+      id: pb.id,
+      auctionId: pb.auctionId,
+      userId: pb.userId,
+      maxPrice: pb.maxPrice,
+      status: pb.status || 'active',
+      createdAt: pb.createdAt,
+      cancelledAt: pb.cancelledAt || null
+    };
+    db.prepare(`INSERT INTO proxy_bids (id, auction_id, user_id, max_price, status, created_at, cancelled_at)
+                VALUES (@id, @auctionId, @userId, @maxPrice, @status, @createdAt, @cancelledAt)`).run(params);
+    return pb;
+  },
+  cancel: (id) => db.prepare('UPDATE proxy_bids SET status = ?, cancelled_at = ? WHERE id = ?').run('cancelled', Date.now(), id),
+  updateStatus: (id, status) => db.prepare('UPDATE proxy_bids SET status = ? WHERE id = ?').run(status, id)
+};
+
+const ReminderDAO = {
+  getAll: () => db.prepare('SELECT * FROM reminders ORDER BY created_at DESC').all().map(rowToReminder),
+  getByUser: (userId) =>
+    db.prepare('SELECT * FROM reminders WHERE user_id = ? ORDER BY created_at DESC').all(userId).map(rowToReminder),
+  getByAuction: (auctionId) =>
+    db.prepare('SELECT * FROM reminders WHERE auction_id = ? AND notified = 0').all(auctionId).map(rowToReminder),
+  has: (userId, auctionId) =>
+    !!db.prepare('SELECT 1 FROM reminders WHERE user_id = ? AND auction_id = ?').get(userId, auctionId),
+  create: (r) => {
+    const params = {
+      id: r.id,
+      userId: r.userId,
+      auctionId: r.auctionId,
+      createdAt: r.createdAt,
+      notified: r.notified ? 1 : 0
+    };
+    db.prepare(`INSERT INTO reminders (id, user_id, auction_id, created_at, notified)
+                VALUES (@id, @userId, @auctionId, @createdAt, @notified)`).run(params);
+    return r;
+  },
+  remove: (userId, auctionId) => db.prepare('DELETE FROM reminders WHERE user_id = ? AND auction_id = ?').run(userId, auctionId),
+  markNotified: (auctionId) => db.prepare('UPDATE reminders SET notified = 1 WHERE auction_id = ?').run(auctionId)
+};
+
+const NotificationDAO = {
+  getByUser: (userId) =>
+    db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC').all(userId).map(rowToNotification),
+  getUnreadCount: (userId) => {
+    const r = db.prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id = ? AND read = 0').get(userId);
+    return r?.c || 0;
+  },
+  create: (n) => {
+    const params = {
+      id: n.id,
+      userId: n.userId,
+      type: n.type,
+      title: n.title,
+      content: n.content || null,
+      auctionId: n.auctionId || null,
+      read: n.read ? 1 : 0,
+      createdAt: n.createdAt
+    };
+    db.prepare(`INSERT INTO notifications (id, user_id, type, title, content, auction_id, read, created_at)
+                VALUES (@id, @userId, @type, @title, @content, @auctionId, @read, @createdAt)`).run(params);
+    return n;
+  },
+  markRead: (id) => db.prepare('UPDATE notifications SET read = 1 WHERE id = ?').run(id),
+  markAllRead: (userId) => db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(userId)
 };
 
 const BidDAO = {
@@ -353,8 +572,16 @@ const BidDAO = {
   getByUser: (userId) =>
     db.prepare('SELECT * FROM bids WHERE user_id = ? ORDER BY time DESC').all(userId).map(rowToBid),
   create: (bid) => {
-    db.prepare(`INSERT INTO bids (id, auction_id, user_id, price, time)
-                VALUES (@id, @auctionId, @userId, @price, @time)`).run(bid);
+    const params = {
+      id: bid.id,
+      auctionId: bid.auctionId,
+      userId: bid.userId,
+      price: bid.price,
+      time: bid.time,
+      isProxy: bid.isProxy ? 1 : 0
+    };
+    db.prepare(`INSERT INTO bids (id, auction_id, user_id, price, time, is_proxy)
+                VALUES (@id, @auctionId, @userId, @price, @time, @isProxy)`).run(params);
     return bid;
   }
 };
@@ -477,17 +704,54 @@ const initMockData = () => {
       UserDAO.create({ ...u, password: passwordHash(u.password), createdAt: now });
     });
 
+    const mockSpecials = [
+      {
+        id: 'special-1',
+        name: '2024春季古董艺术品专场',
+        description: '本次专场汇集明清官窑瓷器、近现代名家书画等多件艺术珍品，为藏家呈现一场文化盛宴。',
+        coverImage: 'https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=1200',
+        startTime: now - 3600000 * 24,
+        endTime: now + 3600000 * 96,
+        createdBy: 'user-admin'
+      },
+      {
+        id: 'special-2',
+        name: '潮流数码限定专场',
+        description: '限量版电子产品、签名版设备，数码收藏爱好者的梦想专场。',
+        coverImage: 'https://images.unsplash.com/photo-1592750475338-74b7b21085ab?w=1200',
+        startTime: now - 3600000 * 6,
+        endTime: now + 3600000 * 48,
+        createdBy: 'user-admin'
+      },
+      {
+        id: 'special-3',
+        name: '奢华珠宝腕表专场',
+        description: '顶级品牌珠宝、经典腕表，尽在奢华专场。',
+        coverImage: 'https://images.unsplash.com/photo-1523170335258-f5ed11844a49?w=1200',
+        startTime: now - 3600000 * 12,
+        endTime: now + 3600000 * 72,
+        createdBy: 'user-admin'
+      }
+    ];
+    mockSpecials.forEach(sp => {
+      AuctionSpecialDAO.create({ ...sp, createdAt: now - 86400000 * 3 });
+    });
+
     const mockAuctions = [
-      { id: 'auction-1', title: '清代青花瓷瓶', description: '<p>清乾隆时期官窑青花瓷瓶，保存完好，釉色温润，是收藏佳品。</p><p>高度约35cm，底部有乾隆年制款识。</p>', images: ['https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=600'], category: '古董', startPrice: 50000, minIncrement: 1000, deposit: 5000, startTime: now - 3600000 * 2, endTime: now + 3600000 * 5, buyNowPrice: 120000, sellerId: 'user-3', status: 'active' },
-      { id: 'auction-2', title: '齐白石水墨虾图', description: '<p>齐白石大师晚年作品，水墨写意虾图，灵动自然。</p><p>尺寸：68cm × 45cm，有多处收藏章。</p>', images: ['https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?w=600'], category: '艺术品', startPrice: 80000, minIncrement: 2000, deposit: 8000, startTime: now - 3600000 * 5, endTime: now + 3600000 * 2, buyNowPrice: 200000, sellerId: 'user-3', status: 'active' },
-      { id: 'auction-3', title: '限量版iPhone 15 Pro Max', description: '<p>钛金属原色，1TB版本，未拆封。</p><p>全球限量编号版，附带收藏证书。</p>', images: ['https://images.unsplash.com/photo-1592750475338-74b7b21085ab?w=600'], category: '数码', startPrice: 15000, minIncrement: 500, deposit: 1500, startTime: now - 3600000, endTime: now + 3600000 * 24, buyNowPrice: 30000, sellerId: 'user-5', status: 'active' },
-      { id: 'auction-4', title: '缅甸天然翡翠手镯', description: '<p>A货翡翠，冰种飘绿，内径58mm。</p><p>附带国家级珠宝鉴定证书。</p>', images: ['https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=600'], category: '珠宝', startPrice: 30000, minIncrement: 1000, deposit: 3000, startTime: now - 3600000 * 10, endTime: now + 3600000 * 8, buyNowPrice: 88000, sellerId: 'user-4', status: 'active' },
-      { id: 'auction-5', title: '爱马仕Birkin 30', description: '<p>经典Togo皮，黑色银扣，Y刻。</p><p>99新，全套配件齐全。</p>', images: ['https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=600'], category: '奢侈品', startPrice: 100000, minIncrement: 5000, deposit: 10000, startTime: now - 3600000 * 24, endTime: now + 3600000 * 12, buyNowPrice: 180000, sellerId: 'user-4', status: 'active' },
+      { id: 'auction-1', title: '清代青花瓷瓶', description: '<p>清乾隆时期官窑青花瓷瓶，保存完好，釉色温润，是收藏佳品。</p><p>高度约35cm，底部有乾隆年制款识。</p>', images: ['https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=600'], category: '古董', specialId: 'special-1', startPrice: 50000, minIncrement: 1000, deposit: 5000, startTime: now - 3600000 * 2, endTime: now + 3600000 * 5, buyNowPrice: 120000, sellerId: 'user-3', status: 'active' },
+      { id: 'auction-2', title: '齐白石水墨虾图', description: '<p>齐白石大师晚年作品，水墨写意虾图，灵动自然。</p><p>尺寸：68cm × 45cm，有多处收藏章。</p>', images: ['https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?w=600'], category: '艺术品', specialId: 'special-1', startPrice: 80000, minIncrement: 2000, deposit: 8000, startTime: now - 3600000 * 5, endTime: now + 3600000 * 2, buyNowPrice: 200000, sellerId: 'user-3', status: 'active' },
+      { id: 'auction-3', title: '限量版iPhone 15 Pro Max', description: '<p>钛金属原色，1TB版本，未拆封。</p><p>全球限量编号版，附带收藏证书。</p>', images: ['https://images.unsplash.com/photo-1592750475338-74b7b21085ab?w=600'], category: '数码', specialId: 'special-2', startPrice: 15000, minIncrement: 500, deposit: 1500, startTime: now - 3600000, endTime: now + 3600000 * 24, buyNowPrice: 30000, sellerId: 'user-5', status: 'active' },
+      { id: 'auction-4', title: '缅甸天然翡翠手镯', description: '<p>A货翡翠，冰种飘绿，内径58mm。</p><p>附带国家级珠宝鉴定证书。</p>', images: ['https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=600'], category: '珠宝', specialId: 'special-3', startPrice: 30000, minIncrement: 1000, deposit: 3000, startTime: now - 3600000 * 10, endTime: now + 3600000 * 8, buyNowPrice: 88000, sellerId: 'user-4', status: 'active' },
+      { id: 'auction-5', title: '爱马仕Birkin 30', description: '<p>经典Togo皮，黑色银扣，Y刻。</p><p>99新，全套配件齐全。</p>', images: ['https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=600'], category: '奢侈品', specialId: 'special-3', startPrice: 100000, minIncrement: 5000, deposit: 10000, startTime: now - 3600000 * 24, endTime: now + 3600000 * 12, buyNowPrice: 180000, sellerId: 'user-4', status: 'active' },
       { id: 'auction-6', title: '1960年代劳力士潜航者', description: '<p> vintage Rolex Submariner 5513，原装表盘。</p><p>走时精准，收藏级品相。</p>', images: ['https://images.unsplash.com/photo-1523170335258-f5ed11844a49?w=600'], category: '收藏品', startPrice: 60000, minIncrement: 2000, deposit: 6000, startTime: now - 3600000 * 3, endTime: now + 3600000 * 6, buyNowPrice: 150000, sellerId: 'user-3', status: 'active' },
       { id: 'auction-7', title: '1959元年Fender Stratocaster', description: '<p>元年芬达电吉他，日落色，枫木指板。</p><p>原装拾音器，附带硬壳箱。</p>', images: ['https://images.unsplash.com/photo-1550985616-10810253b84d?w=600'], category: '乐器', startPrice: 150000, minIncrement: 5000, deposit: 15000, startTime: now - 3600000 * 48, endTime: now - 3600000 * 2, buyNowPrice: 280000, sellerId: 'user-5', status: 'ended', winnerId: 'user-1', finalPrice: 220000 },
       { id: 'auction-8', title: '宋版《资治通鉴》残卷', description: '<p>宋代刻本《资治通鉴》，存卷二十三至二十五。</p><p>名家递藏，藏印累累。</p>', images: ['https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=600'], category: '稀有书籍', startPrice: 80000, minIncrement: 2000, deposit: 8000, startTime: now - 3600000 * 72, endTime: now - 3600000 * 5, buyNowPrice: 200000, sellerId: 'user-3', status: 'ended', winnerId: 'user-2', finalPrice: 165000 },
-      { id: 'auction-9', title: '科比2010年总决赛签名球衣', description: '<p>科比·布莱恩特2010年总决赛G7亲笔签名球衣。</p><p>PSA/DNA认证，限量编号。</p>', images: ['https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=600'], category: '运动纪念品', startPrice: 40000, minIncrement: 1000, deposit: 4000, startTime: now - 3600000 * 20, endTime: now + 3600000 * 4, buyNowPrice: 120000, sellerId: 'user-4', status: 'active' },
-      { id: 'auction-10', title: 'Supreme Box Logo卫衣(2006)', description: '<p>2006年FW Box Logo Crewneck，灰色M码。</p><p>Deadstock状态，极稀有。</p>', images: ['https://images.unsplash.com/photo-1556821840-3a63f95609a7?w=600'], category: '时尚单品', startPrice: 8000, minIncrement: 200, deposit: 800, startTime: now - 3600000 * 1, endTime: now + 3600000 * 3, buyNowPrice: 25000, sellerId: 'user-5', status: 'active' }
+      { id: 'auction-9', title: '科比2010年总决赛签名球衣', description: '<p>科比·布莱恩特2010年总决赛G7亲笔签名球衣。</p><p>PSA/DNA认证，限量编号。</p>', images: ['https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=600'], category: '运动纪念品', specialId: 'special-2', startPrice: 40000, minIncrement: 1000, deposit: 4000, startTime: now - 3600000 * 20, endTime: now + 3600000 * 4, buyNowPrice: 120000, sellerId: 'user-4', status: 'active' },
+      { id: 'auction-10', title: 'Supreme Box Logo卫衣(2006)', description: '<p>2006年FW Box Logo Crewneck，灰色M码。</p><p>Deadstock状态，极稀有。</p>', images: ['https://images.unsplash.com/photo-1556821840-3a63f95609a7?w=600'], category: '时尚单品', startPrice: 8000, minIncrement: 200, deposit: 800, startTime: now - 3600000 * 1, endTime: now + 3600000 * 3, buyNowPrice: 25000, sellerId: 'user-5', status: 'active' },
+      { id: 'auction-11', title: '明代官窑青花龙纹大盘', description: '<p>明宣德时期官窑青花龙纹大盘，直径约40cm。</p><p>器形端正，青花发色纯正，龙纹威武有力。</p>', images: ['https://images.unsplash.com/photo-1596755094514-f87e34085b2c?w=600'], category: '古董', specialId: 'special-1', startPrice: 200000, minIncrement: 5000, deposit: 20000, startTime: now + 3600000 * 24, endTime: now + 3600000 * 72, buyNowPrice: 500000, sellerId: 'user-3', status: 'pending' },
+      { id: 'auction-12', title: '张大千泼彩山水图', description: '<p>张大千先生晚年泼彩精品，设色华贵，气势磅礴。</p><p>尺寸：96cm × 60cm，有大千居士款识及多枚鉴藏印。</p>', images: ['https://images.unsplash.com/photo-1578926288207-a90a5366759d?w=600'], category: '艺术品', specialId: 'special-1', startPrice: 300000, minIncrement: 10000, deposit: 30000, startTime: now + 3600000 * 48, endTime: now + 3600000 * 96, buyNowPrice: 800000, sellerId: 'user-3', status: 'pending' },
+      { id: 'auction-13', title: 'Apple Vision Pro 开发者限定版', description: '<p>Apple Vision Pro 开发者限定编号版，未拆封。</p><p>全球限量1000台，附带开发者签名证书。</p>', images: ['https://images.unsplash.com/photo-1622979135225-d2ba269cf1ac?w=600'], category: '数码', specialId: 'special-2', startPrice: 50000, minIncrement: 1000, deposit: 5000, startTime: now + 3600000 * 12, endTime: now + 3600000 * 36, buyNowPrice: 120000, sellerId: 'user-5', status: 'pending' },
+      { id: 'auction-14', title: '卡地亚山度士腕表', description: '<p>Cartier Santos 100 XL，精钢表壳，蓝色表盘。</p><p>全套配件齐全，99新状态。</p>', images: ['https://images.unsplash.com/photo-1434056886845-df3d95c93e97?w=600'], category: '奢侈品', specialId: 'special-3', startPrice: 80000, minIncrement: 2000, deposit: 8000, startTime: now + 3600000 * 6, endTime: now + 3600000 * 30, buyNowPrice: 150000, sellerId: 'user-4', status: 'pending' }
     ];
 
     mockAuctions.forEach(a => {
@@ -641,6 +905,54 @@ const initMockData = () => {
     FavoriteDAO.add('user-1', 'auction-9');
     FavoriteDAO.add('user-2', 'auction-1');
     FavoriteDAO.add('user-2', 'auction-6');
+
+    ProxyBidDAO.create({
+      id: 'proxy-1',
+      auctionId: 'auction-1',
+      userId: 'user-1',
+      maxPrice: 100000,
+      status: 'active',
+      createdAt: now - 3600000
+    });
+    ProxyBidDAO.create({
+      id: 'proxy-2',
+      auctionId: 'auction-3',
+      userId: 'user-2',
+      maxPrice: 28000,
+      status: 'active',
+      createdAt: now - 1800000
+    });
+
+    ReminderDAO.create({
+      id: 'reminder-1',
+      userId: 'user-1',
+      auctionId: 'auction-11',
+      createdAt: now - 3600000,
+      notified: 0
+    });
+    ReminderDAO.create({
+      id: 'reminder-2',
+      userId: 'user-2',
+      auctionId: 'auction-13',
+      createdAt: now - 1800000,
+      notified: 0
+    });
+    ReminderDAO.create({
+      id: 'reminder-3',
+      userId: 'user-1',
+      auctionId: 'auction-12',
+      createdAt: now - 900000,
+      notified: 0
+    });
+
+    NotificationDAO.create({
+      id: 'notif-1',
+      userId: 'user-1',
+      type: 'system',
+      title: '欢迎来到 LUXE AUCTION',
+      content: '感谢您注册，祝您竞拍愉快！',
+      createdAt: now - 86400000
+    });
   });
 
   tx();
@@ -662,5 +974,9 @@ module.exports = {
   ReviewDAO,
   ReportDAO,
   CertificationDAO,
-  DelayRecordDAO
+  DelayRecordDAO,
+  AuctionSpecialDAO,
+  ProxyBidDAO,
+  ReminderDAO,
+  NotificationDAO
 };

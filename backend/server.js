@@ -4,7 +4,7 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 
-const { UserDAO, AuctionDAO, BidDAO, TransactionDAO, WatchlistDAO, FavoriteDAO, ReviewDAO, ReportDAO, CertificationDAO, DelayRecordDAO, uuidv4 } = require('./db.js');
+const { UserDAO, AuctionDAO, BidDAO, TransactionDAO, WatchlistDAO, FavoriteDAO, ReviewDAO, ReportDAO, CertificationDAO, DelayRecordDAO, AuctionSpecialDAO, ProxyBidDAO, ReminderDAO, NotificationDAO, uuidv4 } = require('./db.js');
 const { generateToken, authMiddleware, verifySocketToken } = require('./auth.js');
 
 const app = express();
@@ -21,7 +21,9 @@ const socketUsers = new Map();
 
 const getAuctionStatus = (auction) => {
   const now = Date.now();
-  if (now < auction.startTime) return 'pending';
+  const sevenDaysBeforeStart = auction.startTime - 7 * 24 * 3600 * 1000;
+  if (now < sevenDaysBeforeStart) return 'upcoming';
+  if (now >= sevenDaysBeforeStart && now < auction.startTime) return 'preview';
   if (now > auction.endTime) {
     if (auction.status !== 'ended') {
       auction.status = 'ended';
@@ -188,12 +190,14 @@ app.get('/api/auctions', (req, res) => {
   res.json(list.map(a => {
     const seller = UserDAO.getById(a.sellerId);
     const cert = CertificationDAO.getByAuction(a.id);
+    const special = a.specialId ? AuctionSpecialDAO.getById(a.specialId) : null;
     return {
       ...a,
       sellerNickname: seller ? seller.nickname : '未知',
       sellerAvatar: seller ? seller.avatar : '',
       sellerCreditScore: seller ? seller.creditScore : 5,
-      hasCertification: !!cert
+      hasCertification: !!cert,
+      specialName: special ? special.name : null
     };
   }));
 });
@@ -209,6 +213,7 @@ app.get('/api/auctions/:id', (req, res) => {
     const bidder = UserDAO.getById(r.bidderId);
     return { ...r, bidderNickname: bidder ? bidder.nickname : '未知' };
   });
+  const special = auction.specialId ? AuctionSpecialDAO.getById(auction.specialId) : null;
   res.json({
     ...auction,
     sellerNickname: seller ? seller.nickname : '未知',
@@ -216,12 +221,13 @@ app.get('/api/auctions/:id', (req, res) => {
     sellerCreditScore: seller ? seller.creditScore : 5,
     winnerNickname: winner ? winner.nickname : null,
     certification,
-    delayRecords
+    delayRecords,
+    special
   });
 });
 
 app.post('/api/auctions', authMiddleware, (req, res) => {
-  const { title, description, images, category, startPrice, minIncrement, deposit, startTime, endTime, buyNowPrice, certification } = req.body;
+  const { title, description, images, category, specialId, startPrice, minIncrement, deposit, startTime, endTime, buyNowPrice, certification } = req.body;
   if (!title || !description || !startPrice || !minIncrement || !deposit || !startTime || !endTime) {
     return res.status(400).json({ error: '请填写完整信息' });
   }
@@ -232,6 +238,7 @@ app.post('/api/auctions', authMiddleware, (req, res) => {
     description,
     images: images || [],
     category: category || '其他',
+    specialId: specialId || null,
     startPrice,
     minIncrement,
     deposit,
@@ -267,11 +274,142 @@ app.post('/api/auctions', authMiddleware, (req, res) => {
   res.json(auction);
 });
 
+const createBidRecord = (auction, userId, price, isProxy = false, skipDelay = false) => {
+  const user = UserDAO.getById(userId);
+  if (!user) return null;
+
+  const prevBids = BidDAO.getByAuction(auction.id);
+  const isCurrentBidder = prevBids.some(b => b.userId === userId && b.price === auction.currentPrice);
+
+  prevBids.forEach(b => {
+    if (b.userId !== userId) {
+      const bidder = UserDAO.getById(b.userId);
+      if (bidder) {
+        bidder.balance += auction.deposit;
+        UserDAO.updateBalance(bidder.id, bidder.balance);
+      }
+    }
+  });
+
+  const latestUser = UserDAO.getById(userId);
+  if (!isCurrentBidder) {
+    latestUser.balance -= auction.deposit;
+    UserDAO.updateBalance(userId, latestUser.balance);
+  }
+
+  const bid = {
+    id: uuidv4(),
+    auctionId: auction.id,
+    userId,
+    price,
+    time: Date.now(),
+    isProxy
+  };
+  BidDAO.create(bid);
+  auction.currentPrice = price;
+  auction.bidCount++;
+
+  if (!skipDelay) {
+    const timeLeft = auction.endTime - Date.now();
+    if (timeLeft < 5 * 60 * 1000 && timeLeft > 0 && auction.delayCount < 5) {
+      const oldEndTime = auction.endTime;
+      auction.endTime = Date.now() + 3 * 60 * 1000;
+      auction.delayCount = (auction.delayCount || 0) + 1;
+      DelayRecordDAO.create({
+        id: uuidv4(),
+        auctionId: auction.id,
+        bidderId: userId,
+        triggerTime: Date.now(),
+        oldEndTime,
+        newEndTime: auction.endTime
+      });
+    }
+  }
+
+  AuctionDAO.update(auction);
+  return { bid, user: latestUser };
+};
+
+const notifyBidWatchers = (auction, finalPrice, bidderUser, excludeUserId = null) => {
+  const allWatchers = new Set();
+  UserDAO.getAll().forEach(u => {
+    if (!excludeUserId || u.id !== excludeUserId) {
+      const wl = WatchlistDAO.getByUser(u.id);
+      if (wl.includes(auction.id)) allWatchers.add(u.id);
+    }
+  });
+  BidDAO.getByAuction(auction.id).forEach(b => {
+    if (!excludeUserId || b.userId !== excludeUserId) allWatchers.add(b.userId);
+  });
+
+  allWatchers.forEach(uid => {
+    const sockets = Array.from(socketUsers.entries()).filter(([_, u]) => u && u.userId === uid).map(([sid]) => sid);
+    sockets.forEach(sid => {
+      io.to(sid).emit('bid:outbid', {
+        auctionId: auction.id,
+        auctionTitle: auction.title,
+        newPrice: finalPrice,
+        bidderNickname: bidderUser.nickname
+      });
+      io.to(sid).emit('watch:bid_notify', {
+        auctionId: auction.id,
+        auctionTitle: auction.title,
+        newPrice: finalPrice,
+        bidderNickname: bidderUser.nickname
+      });
+    });
+  });
+};
+
+const processProxyBids = (auction, lastBidderId) => {
+  let processed = false;
+  let continueLoop = true;
+
+  while (continueLoop) {
+    continueLoop = false;
+    const activeProxies = ProxyBidDAO.getByAuction(auction.id).filter(p => p.userId !== lastBidderId);
+    if (activeProxies.length === 0) break;
+
+    for (const proxy of activeProxies) {
+      const minBid = auction.currentPrice + auction.minIncrement;
+      if (proxy.maxPrice >= minBid) {
+        const proxyUser = UserDAO.getById(proxy.userId);
+        if (!proxyUser || proxyUser.balance < minBid) continue;
+
+        const nextPrice = Math.min(proxy.maxPrice, Math.max(minBid, auction.currentPrice + auction.minIncrement));
+        const result = createBidRecord(auction, proxy.userId, nextPrice, true, true);
+        if (!result) continue;
+
+        processed = true;
+        lastBidderId = proxy.userId;
+
+        const bidderInfo = {
+          id: result.bid.id,
+          auctionId: result.bid.auctionId,
+          userId: result.bid.userId,
+          nickname: result.user.nickname,
+          avatar: result.user.avatar,
+          price: result.bid.price,
+          time: result.bid.time,
+          isProxy: true
+        };
+        io.emit('bid:new', { ...bidderInfo, auctionEndTime: auction.endTime, delayCount: auction.delayCount });
+        notifyBidWatchers(auction, nextPrice, result.user, proxy.userId);
+
+        continueLoop = true;
+        break;
+      }
+    }
+  }
+  return processed;
+};
+
 app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
   let auction = AuctionDAO.getById(req.params.id);
   if (!auction) return res.status(404).json({ error: '拍品不存在' });
-  getAuctionStatus(auction);
-  if (auction.status !== 'active') {
+  const status = getAuctionStatus(auction);
+  if (status !== 'active') {
+    if (status === 'preview') return res.status(400).json({ error: '拍品正在预展中，尚未开始出价' });
     return res.status(400).json({ error: '拍卖未开始或已结束' });
   }
   if (auction.sellerId === req.user.id) {
@@ -306,49 +444,8 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     return res.status(400).json({ error: '余额不足' });
   }
 
-  const prevBids = BidDAO.getByAuction(auction.id);
-  const myPrevBid = prevBids.find(b => b.userId === req.user.id && b.price === auction.currentPrice);
-  prevBids.forEach(b => {
-    if (b.userId !== req.user.id) {
-      const bidder = UserDAO.getById(b.userId);
-      if (bidder) {
-        bidder.balance += auction.deposit;
-        UserDAO.updateBalance(bidder.id, bidder.balance);
-      }
-    }
-  });
-
-  user = UserDAO.getById(req.user.id);
-  if (!myPrevBid) {
-    user.balance -= auction.deposit;
-    UserDAO.updateBalance(user.id, user.balance);
-  }
-
-  const bid = {
-    id: uuidv4(),
-    auctionId: auction.id,
-    userId: req.user.id,
-    price: finalPrice,
-    time: Date.now()
-  };
-  BidDAO.create(bid);
-  auction.currentPrice = finalPrice;
-  auction.bidCount++;
-
-  const timeLeft = auction.endTime - Date.now();
-  if (timeLeft < 5 * 60 * 1000 && timeLeft > 0 && auction.delayCount < 5) {
-    const oldEndTime = auction.endTime;
-    auction.endTime = Date.now() + 3 * 60 * 1000;
-    auction.delayCount = (auction.delayCount || 0) + 1;
-    DelayRecordDAO.create({
-      id: uuidv4(),
-      auctionId: auction.id,
-      bidderId: req.user.id,
-      triggerTime: Date.now(),
-      oldEndTime,
-      newEndTime: auction.endTime
-    });
-  }
+  const result = createBidRecord(auction, req.user.id, finalPrice, false, false);
+  if (!result) return res.status(500).json({ error: '出价失败' });
 
   if (buyNow && auction.buyNowPrice) {
     auction.status = 'ended';
@@ -359,74 +456,29 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
       seller.balance += finalPrice;
       UserDAO.updateBalance(seller.id, seller.balance);
     }
-    user = UserDAO.getById(req.user.id);
-    user.balance -= (finalPrice - auction.deposit);
-    UserDAO.updateBalance(user.id, user.balance);
-    const tx1 = {
-      id: uuidv4(),
-      userId: auction.sellerId,
-      type: 'income',
-      amount: finalPrice,
-      description: `出售《${auction.title}》成交`,
-      auctionId: auction.id,
-      createdAt: Date.now()
-    };
-    TransactionDAO.create(tx1);
-    const tx2 = {
-      id: uuidv4(),
-      userId: req.user.id,
-      type: 'expense',
-      amount: finalPrice,
-      description: `一口价购买《${auction.title}》`,
-      auctionId: auction.id,
-      createdAt: Date.now()
-    };
-    TransactionDAO.create(tx2);
+    const latestUser = UserDAO.getById(req.user.id);
+    latestUser.balance -= (finalPrice - auction.deposit);
+    UserDAO.updateBalance(req.user.id, latestUser.balance);
+    TransactionDAO.create({ id: uuidv4(), userId: auction.sellerId, type: 'income', amount: finalPrice, description: `出售《${auction.title}》成交`, auctionId: auction.id, createdAt: Date.now() });
+    TransactionDAO.create({ id: uuidv4(), userId: req.user.id, type: 'expense', amount: finalPrice, description: `一口价购买《${auction.title}》`, auctionId: auction.id, createdAt: Date.now() });
+    AuctionDAO.update(auction);
+  } else {
+    processProxyBids(auction, req.user.id);
   }
 
-  AuctionDAO.update(auction);
-  user = UserDAO.getById(req.user.id);
-
+  const latestUser = UserDAO.getById(req.user.id);
   const bidderInfo = {
-    id: bid.id,
-    auctionId: bid.auctionId,
-    userId: bid.userId,
-    nickname: user.nickname,
-    avatar: user.avatar,
-    price: bid.price,
-    time: bid.time
+    id: result.bid.id,
+    auctionId: result.bid.auctionId,
+    userId: result.bid.userId,
+    nickname: latestUser.nickname,
+    avatar: latestUser.avatar,
+    price: result.bid.price,
+    time: result.bid.time
   };
 
   io.emit('bid:new', { ...bidderInfo, auctionEndTime: auction.endTime, delayCount: auction.delayCount });
-
-  const allWatchers = new Set();
-  UserDAO.getAll().forEach(u => {
-    if (u.id !== req.user.id) {
-      const wl = WatchlistDAO.getByUser(u.id);
-      if (wl.includes(auction.id)) allWatchers.add(u.id);
-    }
-  });
-  BidDAO.getByAuction(auction.id).forEach(b => {
-    if (b.userId !== req.user.id) allWatchers.add(b.userId);
-  });
-
-  allWatchers.forEach(uid => {
-    const sockets = Array.from(socketUsers.entries()).filter(([_, u]) => u && u.userId === uid).map(([sid]) => sid);
-    sockets.forEach(sid => {
-      io.to(sid).emit('bid:outbid', {
-        auctionId: auction.id,
-        auctionTitle: auction.title,
-        newPrice: finalPrice,
-        bidderNickname: user.nickname
-      });
-      io.to(sid).emit('watch:bid_notify', {
-        auctionId: auction.id,
-        auctionTitle: auction.title,
-        newPrice: finalPrice,
-        bidderNickname: user.nickname
-      });
-    });
-  });
+  notifyBidWatchers(auction, finalPrice, latestUser, req.user.id);
 
   res.json({ success: true, bid: bidderInfo, auction });
 });
@@ -443,6 +495,237 @@ app.get('/api/auctions/:id/bids', (req, res) => {
   });
   res.json(result);
 });
+
+app.get('/api/auctions/:id/proxy', authMiddleware, (req, res) => {
+  const proxy = ProxyBidDAO.getByUserAndAuction(req.user.id, req.params.id);
+  res.json(proxy || null);
+});
+
+app.post('/api/auctions/:id/proxy', authMiddleware, (req, res) => {
+  const auction = AuctionDAO.getById(req.params.id);
+  if (!auction) return res.status(404).json({ error: '拍品不存在' });
+  const status = getAuctionStatus(auction);
+  if (status === 'ended') return res.status(400).json({ error: '拍卖已结束' });
+  if (auction.sellerId === req.user.id) return res.status(400).json({ error: '不能对自己的拍品设置代理出价' });
+
+  const { maxPrice } = req.body;
+  if (!maxPrice || maxPrice <= auction.currentPrice) {
+    return res.status(400).json({ error: `代理出价上限必须高于当前价 ${auction.currentPrice}` });
+  }
+  const user = UserDAO.getById(req.user.id);
+  if (!user || user.balance < maxPrice) return res.status(400).json({ error: '余额不足以设置此代理上限' });
+
+  const existing = ProxyBidDAO.getByUserAndAuction(req.user.id, req.params.id);
+  if (existing) {
+    ProxyBidDAO.cancel(existing.id);
+  }
+
+  const pb = {
+    id: uuidv4(),
+    auctionId: req.params.id,
+    userId: req.user.id,
+    maxPrice,
+    status: 'active',
+    createdAt: Date.now()
+  };
+  ProxyBidDAO.create(pb);
+
+  processProxyBids(auction, req.user.id);
+
+  res.json(pb);
+});
+
+app.delete('/api/auctions/:id/proxy', authMiddleware, (req, res) => {
+  const proxy = ProxyBidDAO.getByUserAndAuction(req.user.id, req.params.id);
+  if (!proxy) return res.status(404).json({ error: '未找到代理出价' });
+  ProxyBidDAO.cancel(proxy.id);
+  res.json({ success: true });
+});
+
+app.get('/api/my/proxy-bids', authMiddleware, (req, res) => {
+  const list = ProxyBidDAO.getByUser(req.user.id);
+  const result = list.map(p => {
+    const auction = AuctionDAO.getById(p.auctionId);
+    if (auction) getAuctionStatus(auction);
+    return { ...p, auction };
+  });
+  res.json(result);
+});
+
+app.get('/api/specials', (req, res) => {
+  const list = AuctionSpecialDAO.getAll();
+  const result = list.map(sp => {
+    const auctions = AuctionDAO.getBySpecial(sp.id);
+    auctions.forEach(a => getAuctionStatus(a));
+    const activeCount = auctions.filter(a => a.status === 'active').length;
+    return { ...sp, auctionCount: auctions.length, activeCount };
+  });
+  res.json(result);
+});
+
+app.get('/api/specials/:id', (req, res) => {
+  const sp = AuctionSpecialDAO.getById(req.params.id);
+  if (!sp) return res.status(404).json({ error: '专场不存在' });
+  const auctions = AuctionDAO.getBySpecial(req.params.id);
+  auctions.forEach(a => getAuctionStatus(a));
+  const enriched = auctions.map(a => {
+    const seller = UserDAO.getById(a.sellerId);
+    const cert = CertificationDAO.getByAuction(a.id);
+    return {
+      ...a,
+      sellerNickname: seller ? seller.nickname : '未知',
+      sellerAvatar: seller ? seller.avatar : '',
+      sellerCreditScore: seller ? seller.creditScore : 5,
+      hasCertification: !!cert
+    };
+  });
+  res.json({ ...sp, auctions: enriched });
+});
+
+app.post('/api/specials', authMiddleware, (req, res) => {
+  const { name, description, coverImage, startTime, endTime } = req.body;
+  if (!name || !startTime || !endTime) {
+    return res.status(400).json({ error: '请填写完整信息' });
+  }
+  const sp = {
+    id: uuidv4(),
+    name,
+    description,
+    coverImage,
+    startTime,
+    endTime,
+    createdBy: req.user.id,
+    createdAt: Date.now()
+  };
+  AuctionSpecialDAO.create(sp);
+  io.emit('special:new', sp);
+  res.json(sp);
+});
+
+app.put('/api/specials/:id', authMiddleware, (req, res) => {
+  const sp = AuctionSpecialDAO.getById(req.params.id);
+  if (!sp) return res.status(404).json({ error: '专场不存在' });
+  const { name, description, coverImage, startTime, endTime } = req.body;
+  sp.name = name || sp.name;
+  sp.description = description || sp.description;
+  sp.coverImage = coverImage || sp.coverImage;
+  sp.startTime = startTime || sp.startTime;
+  sp.endTime = endTime || sp.endTime;
+  AuctionSpecialDAO.update(sp);
+  res.json(sp);
+});
+
+app.post('/api/auctions/:id/reminder', authMiddleware, (req, res) => {
+  const auction = AuctionDAO.getById(req.params.id);
+  if (!auction) return res.status(404).json({ error: '拍品不存在' });
+  const status = getAuctionStatus(auction);
+  if (status === 'active' || status === 'ended') {
+    return res.status(400).json({ error: '仅可对未开拍的拍品设置提醒' });
+  }
+  let set;
+  if (ReminderDAO.has(req.user.id, req.params.id)) {
+    ReminderDAO.remove(req.user.id, req.params.id);
+    set = false;
+  } else {
+    ReminderDAO.create({
+      id: uuidv4(),
+      userId: req.user.id,
+      auctionId: req.params.id,
+      createdAt: Date.now(),
+      notified: 0
+    });
+    set = true;
+  }
+  res.json({ set });
+});
+
+app.get('/api/my/reminders', authMiddleware, (req, res) => {
+  const list = ReminderDAO.getByUser(req.user.id);
+  const result = list.map(r => {
+    const auction = AuctionDAO.getById(r.auctionId);
+    if (auction) getAuctionStatus(auction);
+    return { ...r, auction };
+  });
+  res.json(result);
+});
+
+app.get('/api/my/reminder-ids', authMiddleware, (req, res) => {
+  const list = ReminderDAO.getByUser(req.user.id);
+  res.json(list.map(r => r.auctionId));
+});
+
+app.get('/api/notifications', authMiddleware, (req, res) => {
+  const list = NotificationDAO.getByUser(req.user.id);
+  res.json(list);
+});
+
+app.post('/api/notifications/read-all', authMiddleware, (req, res) => {
+  NotificationDAO.markAllRead(req.user.id);
+  res.json({ success: true });
+});
+
+app.get('/api/notifications/unread-count', authMiddleware, (req, res) => {
+  const count = NotificationDAO.getUnreadCount(req.user.id);
+  res.json({ count });
+});
+
+app.get('/api/auctions-preview', (req, res) => {
+  let list = AuctionDAO.getAll();
+  list = list.map(a => {
+    const status = getAuctionStatus(a);
+    return { ...a, status };
+  }).filter(a => a.status === 'preview' || a.status === 'upcoming')
+    .sort((a, b) => a.startTime - b.startTime);
+  const result = list.map(a => {
+    const seller = UserDAO.getById(a.sellerId);
+    const cert = CertificationDAO.getByAuction(a.id);
+    return {
+      ...a,
+      sellerNickname: seller ? seller.nickname : '未知',
+      sellerAvatar: seller ? seller.avatar : '',
+      sellerCreditScore: seller ? seller.creditScore : 5,
+      hasCertification: !!cert
+    };
+  });
+  res.json(result);
+});
+
+const checkAuctionStart = () => {
+  const now = Date.now();
+  AuctionDAO.getAll().forEach(a => {
+    const status = getAuctionStatus(a);
+    if (status === 'active' && a.status !== 'active') {
+      a.status = 'active';
+      AuctionDAO.update(a);
+      const reminders = ReminderDAO.getByAuction(a.id);
+      reminders.forEach(r => {
+        const notif = {
+          id: uuidv4(),
+          userId: r.userId,
+          type: 'auction_start',
+          title: '拍品已开拍',
+          content: `《${a.title}》已经开始拍卖，快去出价吧！`,
+          auctionId: a.id,
+          read: 0,
+          createdAt: now
+        };
+        NotificationDAO.create(notif);
+        const sockets = Array.from(socketUsers.entries())
+          .filter(([_, u]) => u && u.userId === r.userId)
+          .map(([sid]) => sid);
+        sockets.forEach(sid => {
+          io.to(sid).emit('auction:started', {
+            auctionId: a.id,
+            auctionTitle: a.title,
+            message: '您关注的拍品已经开拍！'
+          });
+        });
+      });
+      ReminderDAO.markNotified(a.id);
+    }
+  });
+};
+setInterval(checkAuctionStart, 5000);
 
 app.post('/api/auctions/:id/watch', authMiddleware, (req, res) => {
   const auctionId = req.params.id;

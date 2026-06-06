@@ -27,4 +27,34 @@ api.interceptors.response.use(
   }
 )
 
+export const specialApi = {
+  list: () => api.get('/specials'),
+  get: (id) => api.get(`/specials/${id}`),
+  create: (data) => api.post('/specials', data),
+  update: (id, data) => api.put(`/specials/${id}`, data)
+}
+
+export const proxyBidApi = {
+  get: (auctionId) => api.get(`/auctions/${auctionId}/proxy`),
+  set: (auctionId, maxPrice) => api.post(`/auctions/${auctionId}/proxy`, { maxPrice }),
+  cancel: (auctionId) => api.delete(`/auctions/${auctionId}/proxy`),
+  myList: () => api.get('/my/proxy-bids')
+}
+
+export const reminderApi = {
+  toggle: (auctionId) => api.post(`/auctions/${auctionId}/reminder`),
+  myList: () => api.get('/my/reminders'),
+  myIds: () => api.get('/my/reminder-ids')
+}
+
+export const notificationApi = {
+  list: () => api.get('/notifications'),
+  readAll: () => api.post('/notifications/read-all'),
+  unreadCount: () => api.get('/notifications/unread-count')
+}
+
+export const previewApi = {
+  list: () => api.get('/auctions-preview')
+}
+
 export default api
