@@ -4,7 +4,7 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 
-const { UserDAO, AuctionDAO, BidDAO, TransactionDAO, WatchlistDAO, uuidv4 } = require('./db.js');
+const { UserDAO, AuctionDAO, BidDAO, TransactionDAO, WatchlistDAO, FavoriteDAO, ReviewDAO, ReportDAO, CertificationDAO, DelayRecordDAO, uuidv4 } = require('./db.js');
 const { generateToken, authMiddleware, verifySocketToken } = require('./auth.js');
 
 const app = express();
@@ -98,6 +98,12 @@ const getUserSafe = (user) => {
   return safe;
 };
 
+const calcCreditScore = (userId) => {
+  const avg = ReviewDAO.getAverageRating(userId);
+  UserDAO.updateCreditScore(userId, avg);
+  return avg;
+};
+
 app.post('/api/auth/register', (req, res) => {
   const { username, password, nickname } = req.body;
   if (!username || !password || !nickname) {
@@ -114,6 +120,7 @@ app.post('/api/auth/register', (req, res) => {
     password: bcrypt.hashSync(password, 10),
     nickname,
     balance: 10000,
+    creditScore: 5,
     avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
     createdAt: Date.now()
   };
@@ -180,10 +187,13 @@ app.get('/api/auctions', (req, res) => {
   });
   res.json(list.map(a => {
     const seller = UserDAO.getById(a.sellerId);
+    const cert = CertificationDAO.getByAuction(a.id);
     return {
       ...a,
       sellerNickname: seller ? seller.nickname : '未知',
-      sellerAvatar: seller ? seller.avatar : ''
+      sellerAvatar: seller ? seller.avatar : '',
+      sellerCreditScore: seller ? seller.creditScore : 5,
+      hasCertification: !!cert
     };
   }));
 });
@@ -194,21 +204,30 @@ app.get('/api/auctions/:id', (req, res) => {
   getAuctionStatus(auction);
   const seller = UserDAO.getById(auction.sellerId);
   const winner = auction.winnerId ? UserDAO.getById(auction.winnerId) : null;
+  const certification = CertificationDAO.getByAuction(req.params.id);
+  const delayRecords = DelayRecordDAO.getByAuction(req.params.id).map(r => {
+    const bidder = UserDAO.getById(r.bidderId);
+    return { ...r, bidderNickname: bidder ? bidder.nickname : '未知' };
+  });
   res.json({
     ...auction,
     sellerNickname: seller ? seller.nickname : '未知',
     sellerAvatar: seller ? seller.avatar : '',
-    winnerNickname: winner ? winner.nickname : null
+    sellerCreditScore: seller ? seller.creditScore : 5,
+    winnerNickname: winner ? winner.nickname : null,
+    certification,
+    delayRecords
   });
 });
 
 app.post('/api/auctions', authMiddleware, (req, res) => {
-  const { title, description, images, category, startPrice, minIncrement, deposit, startTime, endTime, buyNowPrice } = req.body;
+  const { title, description, images, category, startPrice, minIncrement, deposit, startTime, endTime, buyNowPrice, certification } = req.body;
   if (!title || !description || !startPrice || !minIncrement || !deposit || !startTime || !endTime) {
     return res.status(400).json({ error: '请填写完整信息' });
   }
+  const auctionId = uuidv4();
   const auction = {
-    id: uuidv4(),
+    id: auctionId,
     title,
     description,
     images: images || [],
@@ -223,12 +242,27 @@ app.post('/api/auctions', authMiddleware, (req, res) => {
     currentPrice: startPrice,
     bidCount: 0,
     watcherCount: 0,
+    favoriteCount: 0,
+    delayCount: 0,
     status: 'pending',
     winnerId: null,
     finalPrice: null,
     createdAt: Date.now()
   };
   AuctionDAO.create(auction);
+  if (certification && certification.agency && certification.certNumber && certification.certDate && certification.conclusion) {
+    CertificationDAO.create({
+      id: uuidv4(),
+      auctionId,
+      agency: certification.agency,
+      certNumber: certification.certNumber,
+      certDate: certification.certDate,
+      conclusion: certification.conclusion,
+      description: certification.description || null,
+      antiFakeCode: 'AF-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+      createdAt: Date.now()
+    });
+  }
   io.emit('auction:new', auction);
   res.json(auction);
 });
@@ -243,9 +277,17 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
   if (auction.sellerId === req.user.id) {
     return res.status(400).json({ error: '不能对自己的拍品出价' });
   }
-  const { price, buyNow } = req.body;
+  const { price, buyNow, confirmLowCredit } = req.body;
   let user = UserDAO.getById(req.user.id);
   if (!user) return res.status(401).json({ error: '用户不存在' });
+
+  if (user.creditScore < 3 && !confirmLowCredit) {
+    return res.status(400).json({
+      error: '您的信用分较低，继续出价将可能影响交易安全',
+      lowCredit: true,
+      creditScore: user.creditScore
+    });
+  }
 
   let finalPrice;
   if (buyNow && auction.buyNowPrice) {
@@ -294,8 +336,18 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
   auction.bidCount++;
 
   const timeLeft = auction.endTime - Date.now();
-  if (timeLeft < 5 * 60 * 1000 && timeLeft > 0) {
+  if (timeLeft < 5 * 60 * 1000 && timeLeft > 0 && auction.delayCount < 5) {
+    const oldEndTime = auction.endTime;
     auction.endTime = Date.now() + 3 * 60 * 1000;
+    auction.delayCount = (auction.delayCount || 0) + 1;
+    DelayRecordDAO.create({
+      id: uuidv4(),
+      auctionId: auction.id,
+      bidderId: req.user.id,
+      triggerTime: Date.now(),
+      oldEndTime,
+      newEndTime: auction.endTime
+    });
   }
 
   if (buyNow && auction.buyNowPrice) {
@@ -345,10 +397,8 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     time: bid.time
   };
 
-  io.emit('bid:new', { ...bidderInfo, auctionEndTime: auction.endTime });
+  io.emit('bid:new', { ...bidderInfo, auctionEndTime: auction.endTime, delayCount: auction.delayCount });
 
-  const watchers = WatchlistDAO.getByUser(req.user.id).filter(id => id !== auction.id);
-  WatchlistDAO.getByUser(req.user.id).forEach(() => {});
   const allWatchers = new Set();
   UserDAO.getAll().forEach(u => {
     if (u.id !== req.user.id) {
@@ -364,6 +414,12 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     const sockets = Array.from(socketUsers.entries()).filter(([_, u]) => u && u.userId === uid).map(([sid]) => sid);
     sockets.forEach(sid => {
       io.to(sid).emit('bid:outbid', {
+        auctionId: auction.id,
+        auctionTitle: auction.title,
+        newPrice: finalPrice,
+        bidderNickname: user.nickname
+      });
+      io.to(sid).emit('watch:bid_notify', {
         auctionId: auction.id,
         auctionTitle: auction.title,
         newPrice: finalPrice,
@@ -405,6 +461,147 @@ app.post('/api/auctions/:id/watch', authMiddleware, (req, res) => {
     AuctionDAO.update(auction);
   }
   res.json({ watched });
+});
+
+app.post('/api/auctions/:id/favorite', authMiddleware, (req, res) => {
+  const auctionId = req.params.id;
+  const userId = req.user.id;
+  let favorited;
+  if (FavoriteDAO.has(userId, auctionId)) {
+    FavoriteDAO.remove(userId, auctionId);
+    favorited = false;
+  } else {
+    FavoriteDAO.add(userId, auctionId);
+    favorited = true;
+  }
+  const auction = AuctionDAO.getById(auctionId);
+  if (auction) {
+    auction.favoriteCount = Math.max(0, auction.favoriteCount + (favorited ? 1 : -1));
+    AuctionDAO.update(auction);
+  }
+  res.json({ favorited });
+});
+
+app.get('/api/favorites', authMiddleware, (req, res) => {
+  const list = FavoriteDAO.getByUser(req.user.id);
+  res.json(list);
+});
+
+app.get('/api/users/:id/reviews', (req, res) => {
+  const userId = req.params.id;
+  const reviews = ReviewDAO.getByUser(userId).map(r => {
+    const reviewer = UserDAO.getById(r.reviewerId);
+    const auction = AuctionDAO.getById(r.auctionId);
+    return {
+      ...r,
+      reviewerNickname: reviewer ? reviewer.nickname : '未知',
+      reviewerAvatar: reviewer ? reviewer.avatar : '',
+      auctionTitle: auction ? auction.title : '未知'
+    };
+  });
+  const avgRating = ReviewDAO.getAverageRating(userId);
+  res.json({ reviews, avgRating });
+});
+
+app.post('/api/auctions/:id/review', authMiddleware, (req, res) => {
+  const auctionId = req.params.id;
+  const auction = AuctionDAO.getById(auctionId);
+  if (!auction || auction.status !== 'ended') {
+    return res.status(400).json({ error: '拍卖未结束' });
+  }
+  const { rating, comment, targetRole } = req.body;
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: '评分无效' });
+  }
+  let revieweeId;
+  let role;
+  if (req.user.id === auction.sellerId) {
+    if (targetRole !== 'buyer' || !auction.winnerId) {
+      return res.status(400).json({ error: '评价对象无效' });
+    }
+    revieweeId = auction.winnerId;
+    role = 'seller';
+  } else if (req.user.id === auction.winnerId) {
+    if (targetRole !== 'seller') {
+      return res.status(400).json({ error: '评价对象无效' });
+    }
+    revieweeId = auction.sellerId;
+    role = 'buyer';
+  } else {
+    return res.status(403).json({ error: '无权评价' });
+  }
+  if (ReviewDAO.hasReviewed(auctionId, req.user.id)) {
+    return res.status(400).json({ error: '已评价过此拍卖' });
+  }
+  const review = {
+    id: uuidv4(),
+    auctionId,
+    reviewerId: req.user.id,
+    revieweeId,
+    rating,
+    comment: comment || '',
+    role,
+    createdAt: Date.now()
+  };
+  ReviewDAO.create(review);
+  calcCreditScore(revieweeId);
+  res.json(review);
+});
+
+app.get('/api/auctions/:id/review-status', authMiddleware, (req, res) => {
+  const auctionId = req.params.id;
+  const auction = AuctionDAO.getById(auctionId);
+  if (!auction) return res.status(404).json({ error: '拍品不存在' });
+  const existing = ReviewDAO.getByAuction(auctionId);
+  let canReviewSeller = false;
+  let canReviewBuyer = false;
+  let reviewedSeller = false;
+  let reviewedBuyer = false;
+  if (auction.status === 'ended') {
+    if (req.user.id === auction.winnerId) {
+      canReviewSeller = true;
+      reviewedSeller = existing.some(r => r.reviewerId === req.user.id && r.role === 'buyer');
+    }
+    if (req.user.id === auction.sellerId && auction.winnerId) {
+      canReviewBuyer = true;
+      reviewedBuyer = existing.some(r => r.reviewerId === req.user.id && r.role === 'seller');
+    }
+  }
+  res.json({ canReviewSeller, canReviewBuyer, reviewedSeller, reviewedBuyer, reviews: existing });
+});
+
+app.post('/api/reports', authMiddleware, (req, res) => {
+  const { targetId, targetType, auctionId, reason, description } = req.body;
+  if (!targetId || !targetType || !reason) {
+    return res.status(400).json({ error: '请填写完整举报信息' });
+  }
+  const report = {
+    id: uuidv4(),
+    reporterId: req.user.id,
+    targetId,
+    targetType,
+    auctionId: auctionId || null,
+    reason,
+    description: description || '',
+    status: 'pending',
+    createdAt: Date.now()
+  };
+  ReportDAO.create(report);
+  if (targetType === 'user') {
+    const target = UserDAO.getById(targetId);
+    if (target) {
+      const newScore = Math.max(0, (target.creditScore || 5) - 0.5);
+      UserDAO.updateCreditScore(targetId, newScore);
+    }
+  }
+  res.json({ success: true });
+});
+
+app.get('/api/users/:id/credit', (req, res) => {
+  const user = UserDAO.getById(req.params.id);
+  if (!user) return res.status(404).json({ error: '用户不存在' });
+  const avg = ReviewDAO.getAverageRating(req.params.id);
+  res.json({ creditScore: user.creditScore, avgRating: avg });
 });
 
 app.get('/api/watchlist', authMiddleware, (req, res) => {

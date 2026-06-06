@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 
-export const Countdown = ({ endTime, onEnd }) => {
+export const Countdown = ({ endTime, onEnd, urgent = true }) => {
   const [timeLeft, setTimeLeft] = useState(0)
 
   useEffect(() => {
@@ -19,11 +19,12 @@ export const Countdown = ({ endTime, onEnd }) => {
   const h = Math.floor((totalSec % 86400) / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
+  const isUrgent = urgent && timeLeft > 0 && timeLeft <= 60 * 1000
 
   if (timeLeft === 0) return <span>已结束</span>
 
   return (
-    <div className="countdown">
+    <div className={`countdown ${isUrgent ? 'urgent' : ''}`}>
       {d > 0 && (
         <>
           <span className="block">{String(d).padStart(2, '0')}</span>
@@ -34,7 +35,7 @@ export const Countdown = ({ endTime, onEnd }) => {
       <span className="label">:</span>
       <span className="block">{String(m).padStart(2, '0')}</span>
       <span className="label">:</span>
-      <span className="block">{String(s).padStart(2, '0')}</span>
+      <span className="block" style={isUrgent ? { fontSize: 18, padding: '4px 10px' } : {}}>{String(s).padStart(2, '0')}</span>
     </div>
   )
 }
@@ -58,4 +59,43 @@ export const StatusBadge = ({ status }) => {
   }
   const item = map[status] || map.ended
   return <span className={`status-tag ${item.cls}`}>{item.text}</span>
+}
+
+export const CreditScore = ({ score, size = 'default' }) => {
+  if (score == null) score = 5
+  const fullStars = Math.floor(score)
+  const hasHalf = score - fullStars >= 0.5
+  const isLow = score < 3
+  const stars = []
+  for (let i = 0; i < 5; i++) {
+    if (i < fullStars) stars.push('★')
+    else if (i === fullStars && hasHalf) stars.push('☆')
+    else stars.push('☆')
+  }
+  const fontSize = size === 'large' ? 18 : 14
+  return (
+    <span className={`credit-score ${isLow ? 'low' : ''}`}>
+      <span className="stars" style={{ fontSize }}>{stars.join('')}</span>
+      <span className="score" style={{ fontSize }}>{score.toFixed(1)}</span>
+    </span>
+  )
+}
+
+export const CertifiedBadge = () => (
+  <span className="cert-badge">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+    </svg>
+    已鉴定
+  </span>
+)
+
+export const renderStars = (rating) => {
+  const full = Math.floor(rating)
+  const half = rating - full >= 0.5
+  let s = ''
+  for (let i = 0; i < full; i++) s += '★'
+  if (half) s += '☆'
+  while (s.length < 5) s += '☆'
+  return <span className="rate-stars">{s}</span>
 }

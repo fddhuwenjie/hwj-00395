@@ -1,18 +1,31 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Row, Col, Card, Tabs, Segmented, Button, Empty, Tag, Avatar } from 'antd'
-import { FireOutlined, EyeOutlined, RiseOutlined, DollarOutlined } from '@ant-design/icons'
+import { Row, Col, Card, Tabs, Button, Empty, Tag, Avatar, Carousel, Tooltip, message } from 'antd'
+import { FireOutlined, EyeOutlined, RiseOutlined, DollarOutlined, HeartOutlined, HeartFilled, StarFilled, TrophyFilled } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import api from '../api.js'
 import { getSocket } from '../socket.js'
-import { Countdown, formatPrice, StatusBadge } from '../utils.jsx'
+import { Countdown, formatPrice, StatusBadge, CreditScore, CertifiedBadge } from '../utils.jsx'
 
 const Home = ({ user }) => {
   const navigate = useNavigate()
   const [stats, setStats] = useState(null)
   const [auctions, setAuctions] = useState([])
-  const [filter, setFilter] = useState('all')
   const [tabKey, setTabKey] = useState('active')
+  const [favoriteIds, setFavoriteIds] = useState([])
+  const [watchIds, setWatchIds] = useState([])
+
+  const loadMyLists = async () => {
+    if (!user) return
+    try {
+      const [f, w] = await Promise.all([
+        api.get('/favorites'),
+        api.get('/watchlist')
+      ])
+      setFavoriteIds(f)
+      setWatchIds(w)
+    } catch (e) {}
+  }
 
   const loadData = async () => {
     try {
@@ -29,6 +42,7 @@ const Home = ({ user }) => {
 
   useEffect(() => {
     loadData()
+    loadMyLists()
     const socket = getSocket()
     if (socket) {
       const handler = () => loadData()
@@ -39,7 +53,29 @@ const Home = ({ user }) => {
         socket.off('auction:timers', handler)
       }
     }
-  }, [])
+  }, [user])
+
+  const toggleFavorite = async (auctionId, e) => {
+    e.stopPropagation()
+    if (!user) { message.warning('请先登录'); return }
+    try {
+      const res = await api.post(`/auctions/${auctionId}/favorite`)
+      setFavoriteIds(prev => res.favorited ? [...prev, auctionId] : prev.filter(id => id !== auctionId))
+      setAuctions(prev => prev.map(a => a.id === auctionId ? { ...a, favoriteCount: Math.max(0, a.favoriteCount + (res.favorited ? 1 : -1)) } : a))
+      message.success(res.favorited ? '已收藏' : '已取消收藏')
+    } catch (e) {}
+  }
+
+  const toggleWatch = async (auctionId, e) => {
+    e.stopPropagation()
+    if (!user) { message.warning('请先登录'); return }
+    try {
+      const res = await api.post(`/auctions/${auctionId}/watch`)
+      setWatchIds(prev => res.watched ? [...prev, auctionId] : prev.filter(id => id !== auctionId))
+      setAuctions(prev => prev.map(a => a.id === auctionId ? { ...a, watcherCount: Math.max(0, a.watcherCount + (res.watched ? 1 : -1)) } : a))
+      message.success(res.watched ? '已关注' : '已取消关注')
+    } catch (e) {}
+  }
 
   const filtered = auctions.filter(a => {
     if (tabKey === 'active') return a.status === 'active'
@@ -47,14 +83,17 @@ const Home = ({ user }) => {
     return true
   })
 
+  const activeAuctions = auctions.filter(a => a.status === 'active')
+  const hotAuctions = [...activeAuctions].sort((a, b) => b.bidCount - a.bidCount).slice(0, 5)
+
   const trendOption = stats ? {
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['出价次数', '成交额'], bottom: 0 },
-    grid: { left: 40, right: 40, top: 20, bottom: 40 },
-    xAxis: { type: 'category', data: stats.dailyTrend.map(d => d.date) },
+    tooltip: { trigger: 'axis', backgroundColor: 'rgba(22, 33, 62, 0.95)', borderColor: 'rgba(212, 175, 55, 0.3)', textStyle: { color: '#f5f5f5' } },
+    legend: { data: ['出价次数', '成交额'], bottom: 0, textStyle: { color: '#b8b8b8' } },
+    grid: { left: 50, right: 50, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: stats.dailyTrend.map(d => d.date), axisLabel: { color: '#b8b8b8' }, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } } },
     yAxis: [
-      { type: 'value', name: '次数' },
-      { type: 'value', name: '金额(¥)' }
+      { type: 'value', name: '次数', axisLabel: { color: '#b8b8b8' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } }, nameTextStyle: { color: '#6c6c7a' } },
+      { type: 'value', name: '金额(¥)', axisLabel: { color: '#b8b8b8' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } }, nameTextStyle: { color: '#6c6c7a' } }
     ],
     series: [
       {
@@ -62,8 +101,9 @@ const Home = ({ user }) => {
         type: 'line',
         smooth: true,
         data: stats.dailyTrend.map(d => d.bidCount),
-        itemStyle: { color: '#f5222d' },
-        areaStyle: { color: 'rgba(245, 34, 45, 0.1)' }
+        itemStyle: { color: '#d4af37' },
+        lineStyle: { color: '#d4af37', width: 2 },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(212, 175, 55, 0.25)' }, { offset: 1, color: 'rgba(212, 175, 55, 0)' }] } }
       },
       {
         name: '成交额',
@@ -71,28 +111,121 @@ const Home = ({ user }) => {
         smooth: true,
         yAxisIndex: 1,
         data: stats.dailyTrend.map(d => d.salesAmount),
-        itemStyle: { color: '#1890ff' }
+        itemStyle: { color: '#2ed573' },
+        lineStyle: { color: '#2ed573', width: 2 }
       }
     ]
   } : null
 
   const priceOption = stats ? {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: { left: 40, right: 20, top: 20, bottom: 30 },
-    xAxis: { type: 'category', data: stats.priceDistribution.map(d => d.range), axisLabel: { fontSize: 11 } },
-    yAxis: { type: 'value' },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: 'rgba(22, 33, 62, 0.95)', borderColor: 'rgba(212, 175, 55, 0.3)', textStyle: { color: '#f5f5f5' } },
+    grid: { left: 50, right: 20, top: 20, bottom: 30 },
+    xAxis: { type: 'category', data: stats.priceDistribution.map(d => d.range), axisLabel: { fontSize: 11, color: '#b8b8b8' }, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } } },
+    yAxis: { type: 'value', axisLabel: { color: '#b8b8b8' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
     series: [{
       type: 'bar',
       data: stats.priceDistribution.map(d => d.count),
-      itemStyle: { color: '#f5222d', borderRadius: [4, 4, 0, 0] },
+      itemStyle: {
+        color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#d4af37' }, { offset: 1, color: '#b8960c' }] },
+        borderRadius: [4, 4, 0, 0]
+      },
       barWidth: '50%'
     }]
   } : null
 
+  const AuctionCard = ({ a, showWatchFav = true }) => {
+    const isFav = favoriteIds.includes(a.id)
+    const isWatch = watchIds.includes(a.id)
+    return (
+      <Card
+        className="auction-card"
+        hoverable
+        cover={
+          <div style={{ position: 'relative' }}>
+            <img src={a.images?.[0]} className="cover" alt={a.title} style={{ height: 240 }} />
+            {showWatchFav && (
+              <div className="card-floating-info">
+                <div>
+                  {a.status === 'active' && <StatusBadge status={a.status} />}
+                  {a.status !== 'active' && <StatusBadge status={a.status} />}
+                </div>
+                <div className="card-actions">
+                  <Tooltip title={isFav ? '取消收藏' : '收藏'}>
+                    <div className="action-btn" onClick={(e) => toggleFavorite(a.id, e)}>
+                      {isFav ? <HeartFilled style={{ color: '#ff4757' }} /> : <HeartOutlined />}
+                    </div>
+                  </Tooltip>
+                  <Tooltip title={isWatch ? '取消关注' : '关注'}>
+                    <div className="action-btn" onClick={(e) => toggleWatch(a.id, e)}>
+                      {isWatch ? <StarFilled /> : <EyeOutlined />}
+                    </div>
+                  </Tooltip>
+                </div>
+              </div>
+            )}
+          </div>
+        }
+        onClick={() => navigate(`/auction/${a.id}`)}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+          <span className="gold-tag">{a.category}</span>
+          {a.hasCertification && <CertifiedBadge />}
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 500, height: 48, overflow: 'hidden', lineHeight: 1.4, color: '#f5f5f5' }}>{a.title}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <Avatar size={22} src={a.sellerAvatar} style={{ border: '1px solid rgba(212, 175, 55, 0.3)' }} />
+          <span style={{ fontSize: 12, color: '#b8b8b8' }}>{a.sellerNickname}</span>
+          <span style={{ marginLeft: 'auto' }}><CreditScore score={a.sellerCreditScore} /></span>
+        </div>
+        <div className="price" style={{ marginTop: 12 }}>{formatPrice(a.currentPrice)}</div>
+        <div className="meta">
+          <span style={{ display: 'flex', gap: 8 }}>
+            <TrophyFilled style={{ color: '#d4af37' }} /> {a.bidCount} 次出价
+          </span>
+          {a.status === 'active' ? <Countdown endTime={a.endTime} /> : <span>已结束</span>}
+        </div>
+      </Card>
+    )
+  }
+
   return (
-    <div style={{ maxWidth: 1400, margin: '0 auto', padding: '0 24px' }}>
+    <div style={{ maxWidth: 1440, margin: '0 auto', padding: '0 32px' }}>
+      {hotAuctions.length > 0 && (
+        <Carousel autoplay autoplaySpeed={4000} className="hero-banner" effect="fade">
+          {hotAuctions.map(a => (
+            <div key={a.id} className="banner-slide" onClick={() => navigate(`/auction/${a.id}`)} style={{ cursor: 'pointer' }}>
+              <img src={a.images?.[0]} alt={a.title} />
+              <div className="banner-overlay" />
+              <div className="banner-content">
+                <div style={{ marginBottom: 12 }}>
+                  <span className="gold-tag" style={{ marginRight: 10 }}><FireOutlined /> 热门拍卖</span>
+                  {a.hasCertification && <CertifiedBadge />}
+                </div>
+                <h1 className="banner-title">{a.title}</h1>
+                <div className="banner-price">{formatPrice(a.currentPrice)}</div>
+                <div className="banner-meta">
+                  <Avatar size={36} src={a.sellerAvatar} style={{ border: '2px solid rgba(212, 175, 55, 0.5)' }} />
+                  <div>
+                    <div style={{ color: '#f5f5f5', fontWeight: 500 }}>{a.sellerNickname}</div>
+                    <div style={{ color: '#b8b8b8', fontSize: 12 }}><CreditScore score={a.sellerCreditScore} /></div>
+                  </div>
+                  <div style={{ marginLeft: 20, color: '#b8b8b8' }}>
+                    <TrophyFilled style={{ color: '#d4af37', marginRight: 4 }} />
+                    {a.bidCount} 次出价
+                  </div>
+                  <div style={{ marginLeft: 'auto' }}>
+                    <Countdown endTime={a.endTime} />
+                  </div>
+                  <Button className="gold-btn" style={{ marginLeft: 16 }} size="large">立即参拍</Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </Carousel>
+      )}
+
       {stats && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
           <Col xs={24} sm={12} lg={6}>
             <Card className="stat-card">
               <div className="number">¥{Number(stats.todayAmount).toLocaleString()}</div>
@@ -101,63 +234,60 @@ const Home = ({ user }) => {
           </Col>
           <Col xs={24} sm={12} lg={6}>
             <Card className="stat-card">
-              <div className="number" style={{ color: '#1890ff' }}>{stats.activeCount}</div>
+              <div className="number" style={{ color: '#2ed573' }}>{stats.activeCount}</div>
               <div className="label"><RiseOutlined /> 活跃拍品数</div>
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={6}>
             <Card className="stat-card">
-              <div className="number" style={{ color: '#52c41a' }}>{stats.totalBidCount}</div>
+              <div className="number" style={{ color: '#ffa502' }}>{stats.totalBidCount}</div>
               <div className="label"><FireOutlined /> 总出价次数</div>
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={6}>
             <Card className="stat-card">
-              <div className="number" style={{ color: '#722ed1' }}>{stats.top5.length}</div>
+              <div className="number" style={{ color: '#ff4757' }}>{stats.top5.length}</div>
               <div className="label"><EyeOutlined /> 热门拍品 TOP5</div>
             </Card>
           </Col>
         </Row>
       )}
 
+      {activeAuctions.length > 0 && (
+        <div className="horizontal-scroll-section">
+          <div className="section-title">🔥 正在热拍</div>
+          <div className="scroll-container">
+            <div style={{ display: 'flex', gap: 20, minWidth: 'min-content' }}>
+              {activeAuctions.slice(0, 12).map(a => (
+                <div key={a.id} style={{ width: 280, flexShrink: 0 }}>
+                  <AuctionCard a={a} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {stats && (
-        <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Row gutter={[16, 16]} style={{ marginBottom: 32 }}>
           <Col xs={24} lg={14}>
-            <Card title="近7天交易趋势">
+            <Card className="luxury-card" title={<span style={{ fontFamily: '"Playfair Display", serif' }}>📈 近7天交易趋势</span>}>
               {trendOption && <ReactECharts option={trendOption} style={{ height: 280 }} />}
             </Card>
           </Col>
           <Col xs={24} lg={10}>
-            <Card title="成交价格分布">
+            <Card className="luxury-card" title={<span style={{ fontFamily: '"Playfair Display", serif' }}>💰 成交价格分布</span>}>
               {priceOption && <ReactECharts option={priceOption} style={{ height: 280 }} />}
             </Card>
           </Col>
         </Row>
       )}
 
-      {stats && stats.top5.length > 0 && (
-        <Card title={<span><FireOutlined style={{ color: '#f5222d' }} /> 热门拍品 TOP5</span>} style={{ marginBottom: 24 }}>
-          <Row gutter={[16, 16]}>
-            {stats.top5.map((a, idx) => (
-              <Col xs={24} sm={12} lg={24 / 5} key={a.id} onClick={() => navigate(`/auction/${a.id}`)}>
-                <Card hoverable cover={a.images?.[0] ? <img src={a.images[0]} style={{ height: 140, objectFit: 'cover' }} /> : null}>
-                  <div style={{ position: 'relative' }}>
-                    <Tag color={idx < 3 ? '#f5222d' : '#8c8c8c'} style={{ position: 'absolute', top: -12, left: -12, fontSize: 16, fontWeight: 'bold' }}>TOP{idx + 1}</Tag>
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.title}</div>
-                  <div style={{ color: '#f5222d', fontWeight: 'bold', marginTop: 4 }}>{formatPrice(a.currentPrice)}</div>
-                  <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>{a.bidCount} 次出价</div>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </Card>
-      )}
-
       <Card
-        title="拍卖广场"
+        className="luxury-card"
+        title={<span style={{ fontFamily: '"Playfair Display", serif' }}>🏛 拍卖广场</span>}
         extra={
-          <Tabs activeKey={tabKey} onChange={setTabKey} size="small" items={[
+          <Tabs activeKey={tabKey} onChange={setTabKey} size="small" className="tab-luxury" items={[
             { key: 'active', label: '进行中' },
             { key: 'ended', label: '已结束' },
             { key: 'all', label: '全部' }
@@ -165,32 +295,12 @@ const Home = ({ user }) => {
         }
       >
         {filtered.length === 0 ? (
-          <Empty description="暂无拍品" />
+          <Empty description="暂无拍品" style={{ color: '#6c6c7a' }} />
         ) : (
-          <Row gutter={[16, 16]}>
+          <Row gutter={[20, 20]}>
             {filtered.map(a => (
               <Col xs={24} sm={12} lg={6} key={a.id}>
-                <Card
-                  className="auction-card"
-                  hoverable
-                  cover={a.images?.[0] ? <img src={a.images[0]} className="cover" /> : null}
-                  onClick={() => navigate(`/auction/${a.id}`)}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <Tag color="blue">{a.category}</Tag>
-                    <StatusBadge status={a.status} />
-                  </div>
-                  <div style={{ fontSize: 15, fontWeight: 500, height: 44, overflow: 'hidden', lineHeight: 1.4 }}>{a.title}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                    <Avatar size={20} src={a.sellerAvatar} />
-                    <span style={{ fontSize: 12, color: '#666' }}>{a.sellerNickname}</span>
-                  </div>
-                  <div className="price" style={{ marginTop: 12 }}>{formatPrice(a.currentPrice)}</div>
-                  <div className="meta">
-                    <span>{a.bidCount} 次出价</span>
-                    {a.status === 'active' ? <Countdown endTime={a.endTime} /> : <span>已结束</span>}
-                  </div>
-                </Card>
+                <AuctionCard a={a} />
               </Col>
             ))}
           </Row>

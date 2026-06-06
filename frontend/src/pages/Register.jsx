@@ -35,26 +35,27 @@ const Register = ({ onLogin }) => {
   }
 
   return (
-    <div style={{ minHeight: 'calc(100vh - 64px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <Card title="注册" style={{ width: 400 }}>
+    <div className="auth-page">
+      <div className="auth-bg" />
+      <Card className="auth-card luxury-card" title={<span style={{ fontFamily: '"Playfair Display", serif', fontSize: 22, color: '#d4af37' }}>⚜ 加入会员</span>}>
         <Form onFinish={onFinish} size="large">
           <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-            <Input prefix={<UserOutlined />} placeholder="用户名" />
+            <Input prefix={<UserOutlined style={{ color: '#d4af37' }} />} placeholder="用户名" className="luxury-input" />
           </Form.Item>
           <Form.Item name="nickname" rules={[{ required: true, message: '请输入昵称' }]}>
-            <Input prefix={<IdcardOutlined />} placeholder="昵称" />
+            <Input prefix={<IdcardOutlined style={{ color: '#d4af37' }} />} placeholder="昵称" className="luxury-input" />
           </Form.Item>
           <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少6位' }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="密码" />
+            <Input.Password prefix={<LockOutlined style={{ color: '#d4af37' }} />} placeholder="密码（至少6位）" className="luxury-input" />
           </Form.Item>
           <Form.Item name="confirmPassword" rules={[{ required: true, message: '请确认密码' }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="确认密码" />
+            <Input.Password prefix={<LockOutlined style={{ color: '#d4af37' }} />} placeholder="确认密码" className="luxury-input" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" block htmlType="submit" loading={loading}>注 册</Button>
+            <Button className="gold-btn" block htmlType="submit" loading={loading} style={{ height: 46, fontSize: 15 }}>注 册</Button>
           </Form.Item>
-          <div style={{ textAlign: 'center', color: '#999' }}>
-            已有账号？<Link to="/login">立即登录</Link>
+          <div style={{ textAlign: 'center', color: '#b8b8b8' }}>
+            已有账号？<Link to="/login" style={{ color: '#d4af37' }}>立即登录</Link>
           </div>
         </Form>
       </Card>

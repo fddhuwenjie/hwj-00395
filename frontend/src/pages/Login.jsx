@@ -27,22 +27,23 @@ const Login = ({ onLogin }) => {
   }
 
   return (
-    <div style={{ minHeight: 'calc(100vh - 64px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <Card title="登录" style={{ width: 400 }}>
+    <div className="auth-page">
+      <div className="auth-bg" />
+      <Card className="auth-card luxury-card" title={<span style={{ fontFamily: '"Playfair Display", serif', fontSize: 22, color: '#d4af37' }}>⚜ 会员登录</span>}>
         <Form onFinish={onFinish} size="large">
           <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-            <Input prefix={<UserOutlined />} placeholder="用户名" />
+            <Input prefix={<UserOutlined style={{ color: '#d4af37' }} />} placeholder="用户名" className="luxury-input" />
           </Form.Item>
           <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="密码" />
+            <Input.Password prefix={<LockOutlined style={{ color: '#d4af37' }} />} placeholder="密码" className="luxury-input" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" block htmlType="submit" loading={loading}>登 录</Button>
+            <Button className="gold-btn" block htmlType="submit" loading={loading} style={{ height: 46, fontSize: 15 }}>登 录</Button>
           </Form.Item>
-          <div style={{ textAlign: 'center', color: '#999' }}>
-            还没有账号？<Link to="/register">立即注册</Link>
+          <div style={{ textAlign: 'center', color: '#b8b8b8' }}>
+            还没有账号？<Link to="/register" style={{ color: '#d4af37' }}>立即注册</Link>
           </div>
-          <div style={{ textAlign: 'center', color: '#bbb', fontSize: 12, marginTop: 12 }}>
+          <div style={{ textAlign: 'center', color: '#6c6c7a', fontSize: 12, marginTop: 16, padding: 12, background: 'rgba(212, 175, 55, 0.05)', borderRadius: 6 }}>
             测试账号：admin / 123456，buyer1 / 123456
           </div>
         </Form>

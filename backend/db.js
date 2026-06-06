@@ -18,6 +18,7 @@ const initTables = () => {
       nickname TEXT NOT NULL,
       avatar TEXT,
       balance REAL DEFAULT 0,
+      credit_score REAL DEFAULT 5,
       created_at INTEGER NOT NULL
     );
 
@@ -37,6 +38,8 @@ const initTables = () => {
       current_price REAL NOT NULL,
       bid_count INTEGER DEFAULT 0,
       watcher_count INTEGER DEFAULT 0,
+      favorite_count INTEGER DEFAULT 0,
+      delay_count INTEGER DEFAULT 0,
       status TEXT DEFAULT 'pending',
       winner_id TEXT,
       final_price REAL,
@@ -73,6 +76,67 @@ const initTables = () => {
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (auction_id) REFERENCES auctions(id)
     );
+
+    CREATE TABLE IF NOT EXISTS favorites (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      auction_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(user_id, auction_id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (auction_id) REFERENCES auctions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS reviews (
+      id TEXT PRIMARY KEY,
+      auction_id TEXT NOT NULL,
+      reviewer_id TEXT NOT NULL,
+      reviewee_id TEXT NOT NULL,
+      rating INTEGER NOT NULL,
+      comment TEXT,
+      role TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (auction_id) REFERENCES auctions(id),
+      FOREIGN KEY (reviewer_id) REFERENCES users(id),
+      FOREIGN KEY (reviewee_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      reporter_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      auction_id TEXT,
+      reason TEXT NOT NULL,
+      description TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (reporter_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS certifications (
+      id TEXT PRIMARY KEY,
+      auction_id TEXT NOT NULL UNIQUE,
+      agency TEXT NOT NULL,
+      cert_number TEXT NOT NULL,
+      cert_date INTEGER NOT NULL,
+      conclusion TEXT NOT NULL,
+      description TEXT,
+      anti_fake_code TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (auction_id) REFERENCES auctions(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS delay_records (
+      id TEXT PRIMARY KEY,
+      auction_id TEXT NOT NULL,
+      bidder_id TEXT NOT NULL,
+      trigger_time INTEGER NOT NULL,
+      old_end_time INTEGER NOT NULL,
+      new_end_time INTEGER NOT NULL,
+      FOREIGN KEY (auction_id) REFERENCES auctions(id),
+      FOREIGN KEY (bidder_id) REFERENCES users(id)
+    );
   `);
 };
 
@@ -87,6 +151,7 @@ const rowToUser = (row) => {
     nickname: row.nickname,
     avatar: row.avatar,
     balance: row.balance,
+    creditScore: row.credit_score ?? 5,
     createdAt: row.created_at
   };
 };
@@ -109,10 +174,68 @@ const rowToAuction = (row) => {
     currentPrice: row.current_price,
     bidCount: row.bid_count,
     watcherCount: row.watcher_count,
+    favoriteCount: row.favorite_count || 0,
+    delayCount: row.delay_count || 0,
     status: row.status,
     winnerId: row.winner_id,
     finalPrice: row.final_price,
     createdAt: row.created_at
+  };
+};
+
+const rowToReview = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    auctionId: row.auction_id,
+    reviewerId: row.reviewer_id,
+    revieweeId: row.reviewee_id,
+    rating: row.rating,
+    comment: row.comment,
+    role: row.role,
+    createdAt: row.created_at
+  };
+};
+
+const rowToReport = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    reporterId: row.reporter_id,
+    targetId: row.target_id,
+    targetType: row.target_type,
+    auctionId: row.auction_id,
+    reason: row.reason,
+    description: row.description,
+    status: row.status,
+    createdAt: row.created_at
+  };
+};
+
+const rowToCertification = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    auctionId: row.auction_id,
+    agency: row.agency,
+    certNumber: row.cert_number,
+    certDate: row.cert_date,
+    conclusion: row.conclusion,
+    description: row.description,
+    antiFakeCode: row.anti_fake_code,
+    createdAt: row.created_at
+  };
+};
+
+const rowToDelayRecord = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    auctionId: row.auction_id,
+    bidderId: row.bidder_id,
+    triggerTime: row.trigger_time,
+    oldEndTime: row.old_end_time,
+    newEndTime: row.new_end_time
   };
 };
 
@@ -145,12 +268,15 @@ const UserDAO = {
   getById: (id) => rowToUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)),
   getByUsername: (username) => rowToUser(db.prepare('SELECT * FROM users WHERE username = ?').get(username)),
   create: (user) => {
-    db.prepare(`INSERT INTO users (id, username, password, nickname, avatar, balance, created_at)
-                VALUES (@id, @username, @password, @nickname, @avatar, @balance, @createdAt)`).run(user);
+    db.prepare(`INSERT INTO users (id, username, password, nickname, avatar, balance, credit_score, created_at)
+                VALUES (@id, @username, @password, @nickname, @avatar, @balance, @creditScore, @createdAt)`).run(user);
     return user;
   },
   updateBalance: (id, balance) => {
     db.prepare('UPDATE users SET balance = ? WHERE id = ?').run(balance, id);
+  },
+  updateCreditScore: (id, score) => {
+    db.prepare('UPDATE users SET credit_score = ? WHERE id = ?').run(score, id);
   }
 };
 
@@ -174,6 +300,8 @@ const AuctionDAO = {
       currentPrice: auction.currentPrice,
       bidCount: auction.bidCount || 0,
       watcherCount: auction.watcherCount || 0,
+      favoriteCount: auction.favoriteCount || 0,
+      delayCount: auction.delayCount || 0,
       status: auction.status || 'pending',
       winnerId: auction.winnerId || null,
       finalPrice: auction.finalPrice || null,
@@ -181,10 +309,10 @@ const AuctionDAO = {
     };
     db.prepare(`INSERT INTO auctions (id, title, description, images, category, start_price, min_increment,
                 deposit, start_time, end_time, buy_now_price, seller_id, current_price, bid_count,
-                watcher_count, status, winner_id, final_price, created_at)
+                watcher_count, favorite_count, delay_count, status, winner_id, final_price, created_at)
                 VALUES (@id, @title, @description, @images, @category, @startPrice, @minIncrement,
                 @deposit, @startTime, @endTime, @buyNowPrice, @sellerId, @currentPrice, @bidCount,
-                @watcherCount, @status, @winnerId, @finalPrice, @createdAt)`).run(params);
+                @watcherCount, @favoriteCount, @delayCount, @status, @winnerId, @finalPrice, @createdAt)`).run(params);
     return auction;
   },
   update: (auction) => {
@@ -203,6 +331,8 @@ const AuctionDAO = {
       currentPrice: auction.currentPrice,
       bidCount: auction.bidCount || 0,
       watcherCount: auction.watcherCount || 0,
+      favoriteCount: auction.favoriteCount || 0,
+      delayCount: auction.delayCount || 0,
       status: auction.status || 'pending',
       winnerId: auction.winnerId || null,
       finalPrice: auction.finalPrice || null
@@ -211,6 +341,7 @@ const AuctionDAO = {
                 category=@category, start_price=@startPrice, min_increment=@minIncrement,
                 deposit=@deposit, start_time=@startTime, end_time=@endTime, buy_now_price=@buyNowPrice,
                 current_price=@currentPrice, bid_count=@bidCount, watcher_count=@watcherCount,
+                favorite_count=@favoriteCount, delay_count=@delayCount,
                 status=@status, winner_id=@winnerId, final_price=@finalPrice WHERE id=@id`).run(params);
   }
 };
@@ -264,6 +395,70 @@ const WatchlistDAO = {
   }
 };
 
+const FavoriteDAO = {
+  getByUser: (userId) =>
+    db.prepare('SELECT auction_id FROM favorites WHERE user_id = ?').all(userId).map(r => r.auction_id),
+  has: (userId, auctionId) =>
+    !!db.prepare('SELECT 1 FROM favorites WHERE user_id = ? AND auction_id = ?').get(userId, auctionId),
+  add: (userId, auctionId) => {
+    try {
+      db.prepare('INSERT INTO favorites (user_id, auction_id, created_at) VALUES (?, ?, ?)').run(userId, auctionId, Date.now());
+      return true;
+    } catch (e) { return false; }
+  },
+  remove: (userId, auctionId) => {
+    db.prepare('DELETE FROM favorites WHERE user_id = ? AND auction_id = ?').run(userId, auctionId);
+  }
+};
+
+const ReviewDAO = {
+  getByUser: (userId) =>
+    db.prepare('SELECT * FROM reviews WHERE reviewee_id = ? ORDER BY created_at DESC').all(userId).map(rowToReview),
+  getByAuction: (auctionId) =>
+    db.prepare('SELECT * FROM reviews WHERE auction_id = ?').all(auctionId).map(rowToReview),
+  hasReviewed: (auctionId, reviewerId) =>
+    !!db.prepare('SELECT 1 FROM reviews WHERE auction_id = ? AND reviewer_id = ?').get(auctionId, reviewerId),
+  create: (review) => {
+    db.prepare(`INSERT INTO reviews (id, auction_id, reviewer_id, reviewee_id, rating, comment, role, created_at)
+                VALUES (@id, @auctionId, @reviewerId, @revieweeId, @rating, @comment, @role, @createdAt)`).run(review);
+    return review;
+  },
+  getAverageRating: (userId) => {
+    const result = db.prepare('SELECT AVG(rating) as avg FROM reviews WHERE reviewee_id = ?').get(userId);
+    return result?.avg ? Number(result.avg.toFixed(1)) : 5;
+  }
+};
+
+const ReportDAO = {
+  create: (report) => {
+    db.prepare(`INSERT INTO reports (id, reporter_id, target_id, target_type, auction_id, reason, description, status, created_at)
+                VALUES (@id, @reporterId, @targetId, @targetType, @auctionId, @reason, @description, @status, @createdAt)`).run(report);
+    return report;
+  },
+  getByTarget: (targetId, targetType) =>
+    db.prepare('SELECT * FROM reports WHERE target_id = ? AND target_type = ?').all(targetId, targetType).map(rowToReport)
+};
+
+const CertificationDAO = {
+  getByAuction: (auctionId) =>
+    rowToCertification(db.prepare('SELECT * FROM certifications WHERE auction_id = ?').get(auctionId)),
+  create: (cert) => {
+    db.prepare(`INSERT INTO certifications (id, auction_id, agency, cert_number, cert_date, conclusion, description, anti_fake_code, created_at)
+                VALUES (@id, @auctionId, @agency, @certNumber, @certDate, @conclusion, @description, @antiFakeCode, @createdAt)`).run(cert);
+    return cert;
+  }
+};
+
+const DelayRecordDAO = {
+  getByAuction: (auctionId) =>
+    db.prepare('SELECT * FROM delay_records WHERE auction_id = ? ORDER BY trigger_time DESC').all(auctionId).map(rowToDelayRecord),
+  create: (record) => {
+    db.prepare(`INSERT INTO delay_records (id, auction_id, bidder_id, trigger_time, old_end_time, new_end_time)
+                VALUES (@id, @auctionId, @bidderId, @triggerTime, @oldEndTime, @newEndTime)`).run(record);
+    return record;
+  }
+};
+
 const initMockData = () => {
   const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
   if (userCount > 0) return;
@@ -271,12 +466,12 @@ const initMockData = () => {
   const now = Date.now();
   const tx = db.transaction(() => {
     const mockUsers = [
-      { id: 'user-admin', nickname: '管理员', username: 'admin', password: '123456', balance: 100000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=admin' },
-      { id: 'user-1', nickname: '收藏家小王', username: 'buyer1', password: '123456', balance: 50000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer1' },
-      { id: 'user-2', nickname: '艺术品爱好者', username: 'buyer2', password: '123456', balance: 80000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer2' },
-      { id: 'user-3', nickname: '古董商老李', username: 'seller1', password: '123456', balance: 30000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=seller1' },
-      { id: 'user-4', nickname: '时尚达人', username: 'seller2', password: '123456', balance: 45000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=seller2' },
-      { id: 'user-5', nickname: '数码极客', username: 'buyer3', password: '123456', balance: 60000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer3' },
+      { id: 'user-admin', nickname: '管理员', username: 'admin', password: '123456', balance: 100000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=admin', creditScore: 5 },
+      { id: 'user-1', nickname: '收藏家小王', username: 'buyer1', password: '123456', balance: 50000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer1', creditScore: 4.8 },
+      { id: 'user-2', nickname: '艺术品爱好者', username: 'buyer2', password: '123456', balance: 80000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer2', creditScore: 4.5 },
+      { id: 'user-3', nickname: '古董商老李', username: 'seller1', password: '123456', balance: 30000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=seller1', creditScore: 4.9 },
+      { id: 'user-4', nickname: '时尚达人', username: 'seller2', password: '123456', balance: 45000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=seller2', creditScore: 4.2 },
+      { id: 'user-5', nickname: '数码极客', username: 'buyer3', password: '123456', balance: 60000, avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=buyer3', creditScore: 2.8 },
     ];
     mockUsers.forEach(u => {
       UserDAO.create({ ...u, password: passwordHash(u.password), createdAt: now });
@@ -372,6 +567,80 @@ const initMockData = () => {
     UserDAO.updateBalance(winner8.id, winner8.balance);
     TransactionDAO.create({ id: uuidv4(), userId: won8.sellerId, type: 'income', amount: won8.finalPrice, description: `出售《${won8.title}》成交`, auctionId: won8.id, createdAt: now });
     TransactionDAO.create({ id: uuidv4(), userId: won8.winnerId, type: 'expense', amount: won8.finalPrice, description: `拍得《${won8.title}》`, auctionId: won8.id, createdAt: now });
+
+    CertificationDAO.create({
+      id: 'cert-1',
+      auctionId: 'auction-1',
+      agency: '国家文物鉴定中心',
+      certNumber: 'NBW-2024-001234',
+      certDate: now - 86400000 * 30,
+      conclusion: '经鉴定为清代乾隆时期官窑青花瓷瓶，真品',
+      description: '胎质细腻，釉色温润，青花发色纯正，底有乾隆年制官窑款识。保存状态良好，具有极高的收藏价值。',
+      antiFakeCode: 'AF-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+      createdAt: now - 86400000 * 29
+    });
+
+    CertificationDAO.create({
+      id: 'cert-2',
+      auctionId: 'auction-4',
+      agency: '国家珠宝玉石质量监督检验中心',
+      certNumber: 'NGTC-2024-JD-56789',
+      certDate: now - 86400000 * 15,
+      conclusion: 'A货翡翠，冰种飘绿手镯',
+      description: '翡翠A货，冰种质地，飘绿自然，内径58mm，条宽12mm。无裂纹，品相优良。',
+      antiFakeCode: 'AF-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+      createdAt: now - 86400000 * 14
+    });
+
+    CertificationDAO.create({
+      id: 'cert-3',
+      auctionId: 'auction-6',
+      agency: '瑞士天文台表鉴定中心',
+      certNumber: 'COSC-2024-RX-99988',
+      certDate: now - 86400000 * 60,
+      conclusion: '正品 Rolex Submariner 5513 (1960s)',
+      description: '经鉴定为1960年代生产的劳力士潜航者5513型，原装表盘、表壳、表冠，走时精准，符合天文台认证标准。',
+      antiFakeCode: 'AF-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+      createdAt: now - 86400000 * 59
+    });
+
+    ReviewDAO.create({
+      id: 'review-1',
+      auctionId: 'auction-7',
+      reviewerId: 'user-1',
+      revieweeId: 'user-5',
+      rating: 5,
+      comment: '卖家非常专业，吉他描述准确，包装仔细，交易非常愉快！',
+      role: 'buyer',
+      createdAt: now - 86400000
+    });
+
+    ReviewDAO.create({
+      id: 'review-2',
+      auctionId: 'auction-7',
+      reviewerId: 'user-5',
+      revieweeId: 'user-1',
+      rating: 5,
+      comment: '买家付款迅速，沟通顺畅，是非常好的交易伙伴！',
+      role: 'seller',
+      createdAt: now - 86400000 + 3600000
+    });
+
+    ReviewDAO.create({
+      id: 'review-3',
+      auctionId: 'auction-8',
+      reviewerId: 'user-2',
+      revieweeId: 'user-3',
+      rating: 4,
+      comment: '书籍品相很好，就是描述中没提到有轻微水迹，整体还是满意的。',
+      role: 'buyer',
+      createdAt: now - 86400000 * 2
+    });
+
+    FavoriteDAO.add('user-1', 'auction-5');
+    FavoriteDAO.add('user-1', 'auction-9');
+    FavoriteDAO.add('user-2', 'auction-1');
+    FavoriteDAO.add('user-2', 'auction-6');
   });
 
   tx();
@@ -388,5 +657,10 @@ module.exports = {
   AuctionDAO,
   BidDAO,
   TransactionDAO,
-  WatchlistDAO
+  WatchlistDAO,
+  FavoriteDAO,
+  ReviewDAO,
+  ReportDAO,
+  CertificationDAO,
+  DelayRecordDAO
 };
