@@ -1,0 +1,51 @@
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f5f5f5; }
+#root { min-height: 100vh; }
+
+.page-layout { min-height: 100vh; }
+.page-content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+.page-header { background: #fff; padding: 16px 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
+
+.logo { color: #fff; font-size: 20px; font-weight: bold; margin-right: 40px; display: flex; align-items: center; gap: 8px; }
+.logo .icon { font-size: 24px; }
+
+.auction-card { transition: all 0.3s; cursor: pointer; }
+.auction-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+.auction-card .cover { height: 200px; object-fit: cover; background: #f0f0f0; }
+.auction-card .price { color: #f5222d; font-size: 20px; font-weight: bold; }
+.auction-card .meta { color: #999; font-size: 12px; display: flex; justify-content: space-between; margin-top: 8px; }
+
+.status-tag { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.status-active { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+.status-ended { background: #fafafa; color: #999; border: 1px solid #d9d9d9; }
+.status-pending { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+
+.countdown { display: flex; gap: 4px; align-items: center; font-family: 'Monaco', monospace; }
+.countdown .block { background: #000; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 14px; font-weight: bold; }
+.countdown .label { color: #999; font-size: 12px; }
+
+.detail-gallery .main-image { width: 100%; height: 400px; object-fit: cover; border-radius: 8px; background: #f0f0f0; }
+.detail-gallery .thumbs { display: flex; gap: 8px; margin-top: 12px; }
+.detail-gallery .thumbs img { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; border: 2px solid transparent; }
+.detail-gallery .thumbs img.active { border-color: #f5222d; }
+
+.bid-panel { background: linear-gradient(135deg, #fff1f0 0%, #fff 100%); padding: 24px; border-radius: 8px; border: 1px solid #ffa39e; }
+.bid-panel .current-price { font-size: 36px; color: #f5222d; font-weight: bold; margin: 12px 0; }
+.bid-panel .big-btn { height: 48px; font-size: 16px; font-weight: bold; }
+
+.bid-record { display: flex; padding: 12px 0; border-bottom: 1px solid #f0f0f0; align-items: center; gap: 12px; }
+.bid-record .avatar { width: 36px; height: 36px; border-radius: 50%; }
+.bid-record .info { flex: 1; }
+.bid-record .nickname { font-weight: 500; }
+.bid-record .time { color: #999; font-size: 12px; }
+.bid-record .price { color: #f5222d; font-weight: bold; font-size: 16px; }
+
+.stat-card { text-align: center; padding: 20px; }
+.stat-card .number { font-size: 32px; font-weight: bold; color: #f5222d; }
+.stat-card .label { color: #666; margin-top: 8px; }
+
+.rich-editor-wrapper .w-e-text-container { min-height: 200px; }
+
+.won-badge { background: #52c41a; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+
+.empty-state { text-align: center; padding: 60px 20px; color: #999; }
