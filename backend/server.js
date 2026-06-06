@@ -4,8 +4,8 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const bcrypt = require('bcryptjs');
 
-const { users, auctions, bids, transactions, watchlist, initMockData, uuidv4 } = require('./data');
-const { generateToken, authMiddleware, verifySocketToken } = require('./auth');
+const { UserDAO, AuctionDAO, BidDAO, TransactionDAO, WatchlistDAO, uuidv4 } = require('./db.js');
+const { generateToken, authMiddleware, verifySocketToken } = require('./auth.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,8 +17,6 @@ const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] }
 });
 
-initMockData();
-
 const socketUsers = new Map();
 
 const getAuctionStatus = (auction) => {
@@ -27,19 +25,21 @@ const getAuctionStatus = (auction) => {
   if (now > auction.endTime) {
     if (auction.status !== 'ended') {
       auction.status = 'ended';
-      if (auction.bidCount > 0) {
-        const auctionBids = Array.from(bids.values()).filter(b => b.auctionId === auction.id).sort((a, b) => b.price - a.price);
+      if (auction.bidCount > 0 && !auction.winnerId) {
+        const auctionBids = BidDAO.getByAuction(auction.id).sort((a, b) => b.price - a.price);
         if (auctionBids.length > 0) {
           const winner = auctionBids[0];
           auction.winnerId = winner.userId;
           auction.finalPrice = winner.price;
-          const seller = users.get(auction.sellerId);
+          const seller = UserDAO.getById(auction.sellerId);
           if (seller) {
             seller.balance += auction.finalPrice;
+            UserDAO.updateBalance(seller.id, seller.balance);
           }
-          const winnerUser = users.get(winner.userId);
+          const winnerUser = UserDAO.getById(winner.userId);
           if (winnerUser) {
             winnerUser.balance -= (auction.finalPrice - auction.deposit);
+            UserDAO.updateBalance(winnerUser.id, winnerUser.balance);
           }
           const tx1 = {
             id: uuidv4(),
@@ -50,7 +50,7 @@ const getAuctionStatus = (auction) => {
             auctionId: auction.id,
             createdAt: now
           };
-          transactions.set(tx1.id, tx1);
+          TransactionDAO.create(tx1);
           const tx2 = {
             id: uuidv4(),
             userId: winner.userId,
@@ -60,12 +60,13 @@ const getAuctionStatus = (auction) => {
             auctionId: auction.id,
             createdAt: now
           };
-          transactions.set(tx2.id, tx2);
+          TransactionDAO.create(tx2);
         }
-      } else {
+      } else if (auction.bidCount === 0) {
         auction.winnerId = null;
         auction.finalPrice = null;
       }
+      AuctionDAO.update(auction);
     }
     return 'ended';
   }
@@ -73,14 +74,14 @@ const getAuctionStatus = (auction) => {
 };
 
 const syncAuctionTimers = () => {
-  Array.from(auctions.values()).forEach(a => getAuctionStatus(a));
+  AuctionDAO.getAll().forEach(a => getAuctionStatus(a));
 };
 setInterval(syncAuctionTimers, 1000);
 
 setInterval(() => {
   const now = Date.now();
   const statuses = {};
-  Array.from(auctions.values()).forEach(a => {
+  AuctionDAO.getAll().forEach(a => {
     statuses[a.id] = {
       endTime: a.endTime,
       currentPrice: a.currentPrice,
@@ -102,7 +103,7 @@ app.post('/api/auth/register', (req, res) => {
   if (!username || !password || !nickname) {
     return res.status(400).json({ error: '请填写完整信息' });
   }
-  const exists = Array.from(users.values()).find(u => u.username === username);
+  const exists = UserDAO.getByUsername(username);
   if (exists) {
     return res.status(400).json({ error: '用户名已存在' });
   }
@@ -116,7 +117,7 @@ app.post('/api/auth/register', (req, res) => {
     avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
     createdAt: Date.now()
   };
-  users.set(id, user);
+  UserDAO.create(user);
   const token = generateToken(user);
   res.json({ token, user: getUserSafe(user) });
 });
@@ -126,7 +127,7 @@ app.post('/api/auth/login', (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ error: '请填写用户名和密码' });
   }
-  const user = Array.from(users.values()).find(u => u.username === username);
+  const user = UserDAO.getByUsername(username);
   if (!user || !bcrypt.compareSync(password, user.password)) {
     return res.status(401).json({ error: '用户名或密码错误' });
   }
@@ -135,7 +136,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.get('/api/auth/me', authMiddleware, (req, res) => {
-  const user = users.get(req.user.id);
+  const user = UserDAO.getById(req.user.id);
   res.json({ user: getUserSafe(user) });
 });
 
@@ -144,8 +145,9 @@ app.post('/api/wallet/recharge', authMiddleware, (req, res) => {
   if (!amount || amount <= 0) {
     return res.status(400).json({ error: '充值金额无效' });
   }
-  const user = users.get(req.user.id);
-  user.balance += amount;
+  const user = UserDAO.getById(req.user.id);
+  const newBalance = user.balance + amount;
+  UserDAO.updateBalance(user.id, newBalance);
   const tx = {
     id: uuidv4(),
     userId: user.id,
@@ -154,13 +156,13 @@ app.post('/api/wallet/recharge', authMiddleware, (req, res) => {
     description: '账户充值',
     createdAt: Date.now()
   };
-  transactions.set(tx.id, tx);
-  res.json({ balance: user.balance });
+  TransactionDAO.create(tx);
+  res.json({ balance: newBalance });
 });
 
 app.get('/api/auctions', (req, res) => {
   const { status, category } = req.query;
-  let list = Array.from(auctions.values());
+  let list = AuctionDAO.getAll();
   list = list.map(a => {
     getAuctionStatus(a);
     return a;
@@ -177,7 +179,7 @@ app.get('/api/auctions', (req, res) => {
     return b.bidCount - a.bidCount;
   });
   res.json(list.map(a => {
-    const seller = users.get(a.sellerId);
+    const seller = UserDAO.getById(a.sellerId);
     return {
       ...a,
       sellerNickname: seller ? seller.nickname : '未知',
@@ -187,11 +189,11 @@ app.get('/api/auctions', (req, res) => {
 });
 
 app.get('/api/auctions/:id', (req, res) => {
-  const auction = auctions.get(req.params.id);
+  const auction = AuctionDAO.getById(req.params.id);
   if (!auction) return res.status(404).json({ error: '拍品不存在' });
   getAuctionStatus(auction);
-  const seller = users.get(auction.sellerId);
-  const winner = auction.winnerId ? users.get(auction.winnerId) : null;
+  const seller = UserDAO.getById(auction.sellerId);
+  const winner = auction.winnerId ? UserDAO.getById(auction.winnerId) : null;
   res.json({
     ...auction,
     sellerNickname: seller ? seller.nickname : '未知',
@@ -222,15 +224,17 @@ app.post('/api/auctions', authMiddleware, (req, res) => {
     bidCount: 0,
     watcherCount: 0,
     status: 'pending',
+    winnerId: null,
+    finalPrice: null,
     createdAt: Date.now()
   };
-  auctions.set(auction.id, auction);
+  AuctionDAO.create(auction);
   io.emit('auction:new', auction);
   res.json(auction);
 });
 
 app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
-  const auction = auctions.get(req.params.id);
+  let auction = AuctionDAO.getById(req.params.id);
   if (!auction) return res.status(404).json({ error: '拍品不存在' });
   getAuctionStatus(auction);
   if (auction.status !== 'active') {
@@ -240,7 +244,7 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     return res.status(400).json({ error: '不能对自己的拍品出价' });
   }
   const { price, buyNow } = req.body;
-  const user = users.get(req.user.id);
+  let user = UserDAO.getById(req.user.id);
   if (!user) return res.status(401).json({ error: '用户不存在' });
 
   let finalPrice;
@@ -260,19 +264,22 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     return res.status(400).json({ error: '余额不足' });
   }
 
-  const prevBids = Array.from(bids.values()).filter(b => b.auctionId === auction.id);
+  const prevBids = BidDAO.getByAuction(auction.id);
   const myPrevBid = prevBids.find(b => b.userId === req.user.id && b.price === auction.currentPrice);
   prevBids.forEach(b => {
     if (b.userId !== req.user.id) {
-      const bidder = users.get(b.userId);
+      const bidder = UserDAO.getById(b.userId);
       if (bidder) {
         bidder.balance += auction.deposit;
+        UserDAO.updateBalance(bidder.id, bidder.balance);
       }
     }
   });
 
+  user = UserDAO.getById(req.user.id);
   if (!myPrevBid) {
     user.balance -= auction.deposit;
+    UserDAO.updateBalance(user.id, user.balance);
   }
 
   const bid = {
@@ -282,7 +289,7 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     price: finalPrice,
     time: Date.now()
   };
-  bids.set(bid.id, bid);
+  BidDAO.create(bid);
   auction.currentPrice = finalPrice;
   auction.bidCount++;
 
@@ -295,9 +302,14 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
     auction.status = 'ended';
     auction.winnerId = req.user.id;
     auction.finalPrice = finalPrice;
-    const seller = users.get(auction.sellerId);
-    if (seller) seller.balance += finalPrice;
+    const seller = UserDAO.getById(auction.sellerId);
+    if (seller) {
+      seller.balance += finalPrice;
+      UserDAO.updateBalance(seller.id, seller.balance);
+    }
+    user = UserDAO.getById(req.user.id);
     user.balance -= (finalPrice - auction.deposit);
+    UserDAO.updateBalance(user.id, user.balance);
     const tx1 = {
       id: uuidv4(),
       userId: auction.sellerId,
@@ -307,7 +319,7 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
       auctionId: auction.id,
       createdAt: Date.now()
     };
-    transactions.set(tx1.id, tx1);
+    TransactionDAO.create(tx1);
     const tx2 = {
       id: uuidv4(),
       userId: req.user.id,
@@ -317,8 +329,11 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
       auctionId: auction.id,
       createdAt: Date.now()
     };
-    transactions.set(tx2.id, tx2);
+    TransactionDAO.create(tx2);
   }
+
+  AuctionDAO.update(auction);
+  user = UserDAO.getById(req.user.id);
 
   const bidderInfo = {
     id: bid.id,
@@ -332,19 +347,20 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
 
   io.emit('bid:new', { ...bidderInfo, auctionEndTime: auction.endTime });
 
-  const watchers = [];
-  watchlist.forEach((aucIds, uid) => {
-    if (aucIds.includes(auction.id) && uid !== req.user.id) {
-      watchers.push(uid);
+  const watchers = WatchlistDAO.getByUser(req.user.id).filter(id => id !== auction.id);
+  WatchlistDAO.getByUser(req.user.id).forEach(() => {});
+  const allWatchers = new Set();
+  UserDAO.getAll().forEach(u => {
+    if (u.id !== req.user.id) {
+      const wl = WatchlistDAO.getByUser(u.id);
+      if (wl.includes(auction.id)) allWatchers.add(u.id);
     }
   });
-  const auctionBids = Array.from(bids.values()).filter(b => b.auctionId === auction.id);
-  auctionBids.forEach(b => {
-    if (b.userId !== req.user.id && !watchers.includes(b.userId)) {
-      watchers.push(b.userId);
-    }
+  BidDAO.getByAuction(auction.id).forEach(b => {
+    if (b.userId !== req.user.id) allWatchers.add(b.userId);
   });
-  watchers.forEach(uid => {
+
+  allWatchers.forEach(uid => {
     const sockets = Array.from(socketUsers.entries()).filter(([_, u]) => u && u.userId === uid).map(([sid]) => sid);
     sockets.forEach(sid => {
       io.to(sid).emit('bid:outbid', {
@@ -360,11 +376,9 @@ app.post('/api/auctions/:id/bid', authMiddleware, (req, res) => {
 });
 
 app.get('/api/auctions/:id/bids', (req, res) => {
-  const auctionBids = Array.from(bids.values())
-    .filter(b => b.auctionId === req.params.id)
-    .sort((a, b) => b.time - a.time);
+  const auctionBids = BidDAO.getByAuction(req.params.id);
   const result = auctionBids.map(b => {
-    const user = users.get(b.userId);
+    const user = UserDAO.getById(b.userId);
     return {
       ...b,
       nickname: user ? user.nickname : '未知',
@@ -377,41 +391,39 @@ app.get('/api/auctions/:id/bids', (req, res) => {
 app.post('/api/auctions/:id/watch', authMiddleware, (req, res) => {
   const auctionId = req.params.id;
   const userId = req.user.id;
-  if (!watchlist.has(userId)) watchlist.set(userId, []);
-  let list = watchlist.get(userId);
   let watched;
-  if (list.includes(auctionId)) {
-    list = list.filter(id => id !== auctionId);
+  if (WatchlistDAO.has(userId, auctionId)) {
+    WatchlistDAO.remove(userId, auctionId);
     watched = false;
   } else {
-    list.push(auctionId);
+    WatchlistDAO.add(userId, auctionId);
     watched = true;
   }
-  watchlist.set(userId, list);
-  const auction = auctions.get(auctionId);
+  const auction = AuctionDAO.getById(auctionId);
   if (auction) {
     auction.watcherCount = Math.max(0, auction.watcherCount + (watched ? 1 : -1));
+    AuctionDAO.update(auction);
   }
   res.json({ watched });
 });
 
 app.get('/api/watchlist', authMiddleware, (req, res) => {
-  const list = watchlist.get(req.user.id) || [];
+  const list = WatchlistDAO.getByUser(req.user.id);
   res.json(list);
 });
 
 app.get('/api/my/auctions', authMiddleware, (req, res) => {
-  const myList = Array.from(auctions.values())
+  const myList = AuctionDAO.getAll()
     .filter(a => a.sellerId === req.user.id)
     .map(a => { getAuctionStatus(a); return a; });
   res.json(myList);
 });
 
 app.get('/api/my/bids', authMiddleware, (req, res) => {
-  const myBids = Array.from(bids.values()).filter(b => b.userId === req.user.id);
+  const myBids = BidDAO.getByUser(req.user.id);
   const auctionIds = [...new Set(myBids.map(b => b.auctionId))];
   const result = auctionIds.map(id => {
-    const auction = auctions.get(id);
+    const auction = AuctionDAO.getById(id);
     if (!auction) return null;
     getAuctionStatus(auction);
     const myMaxBid = Math.max(...myBids.filter(b => b.auctionId === id).map(b => b.price));
@@ -421,15 +433,14 @@ app.get('/api/my/bids', authMiddleware, (req, res) => {
 });
 
 app.get('/api/my/won', authMiddleware, (req, res) => {
-  const won = Array.from(auctions.values())
+  const won = AuctionDAO.getAll()
     .filter(a => a.winnerId === req.user.id)
     .map(a => { getAuctionStatus(a); return a; });
   res.json(won);
 });
 
 app.get('/api/my/transactions', authMiddleware, (req, res) => {
-  const txs = Array.from(transactions.values())
-    .filter(t => t.userId === req.user.id)
+  const txs = TransactionDAO.getByUser(req.user.id)
     .sort((a, b) => b.createdAt - a.createdAt);
   res.json(txs);
 });
@@ -440,17 +451,17 @@ app.get('/api/stats', (req, res) => {
   todayStart.setHours(0, 0, 0, 0);
   const todayStartTs = todayStart.getTime();
 
-  const todayTransactions = Array.from(transactions.values()).filter(t => t.type === 'income' && t.createdAt >= todayStartTs && t.description.includes('出售'));
+  const todayTransactions = TransactionDAO.getAll().filter(t => t.type === 'income' && t.createdAt >= todayStartTs && t.description && t.description.includes('出售'));
   const todayAmount = todayTransactions.reduce((sum, t) => sum + t.amount, 0);
 
-  const activeAuctions = Array.from(auctions.values()).filter(a => {
+  const activeAuctions = AuctionDAO.getAll().filter(a => {
     getAuctionStatus(a);
     return a.status === 'active';
   });
 
-  const totalBidCount = Array.from(bids.values()).length;
+  const totalBidCount = BidDAO.getAll().length;
 
-  const top5 = Array.from(auctions.values())
+  const top5 = AuctionDAO.getAll()
     .sort((a, b) => b.bidCount - a.bidCount)
     .slice(0, 5)
     .map(a => ({
@@ -469,7 +480,7 @@ app.get('/api/stats', (req, res) => {
     { range: '10-50万', count: 0 },
     { range: '50万以上', count: 0 }
   ];
-  Array.from(auctions.values()).forEach(a => {
+  AuctionDAO.getAll().forEach(a => {
     const p = a.finalPrice || a.currentPrice;
     if (p < 10000) priceDistribution[0].count++;
     else if (p < 50000) priceDistribution[1].count++;
@@ -485,8 +496,8 @@ app.get('/api/stats', (req, res) => {
     d.setHours(0, 0, 0, 0);
     const dayStart = d.getTime();
     const dayEnd = dayStart + 24 * 3600 * 1000;
-    const dayBids = Array.from(bids.values()).filter(b => b.time >= dayStart && b.time < dayEnd).length;
-    const daySales = Array.from(transactions.values()).filter(t => t.type === 'income' && t.createdAt >= dayStart && t.createdAt < dayEnd && t.description.includes('出售')).reduce((s, t) => s + t.amount, 0);
+    const dayBids = BidDAO.getAll().filter(b => b.time >= dayStart && b.time < dayEnd).length;
+    const daySales = TransactionDAO.getAll().filter(t => t.type === 'income' && t.createdAt >= dayStart && t.createdAt < dayEnd && t.description && t.description.includes('出售')).reduce((s, t) => s + t.amount, 0);
     dailyTrend.push({
       date: `${d.getMonth() + 1}/${d.getDate()}`,
       bidCount: dayBids,
@@ -522,5 +533,5 @@ io.on('connection', (socket) => {
 
 const PORT = 8395;
 server.listen(PORT, () => {
-  console.log(`Auction backend running on port ${PORT}`);
+  console.log(`Auction backend running on port ${PORT} (SQLite)`);
 });
