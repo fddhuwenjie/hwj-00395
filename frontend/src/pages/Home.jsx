@@ -19,22 +19,22 @@ const Home = ({ user }) => {
     if (!user) return
     try {
       const [f, w] = await Promise.all([
-        api.get('/favorites'),
-        api.get('/watchlist')
+        api.get('/favorites').catch(() => []),
+        api.get('/watchlist').catch(() => [])
       ])
-      setFavoriteIds(f)
-      setWatchIds(w)
+      setFavoriteIds(Array.isArray(f) ? f : [])
+      setWatchIds(Array.isArray(w) ? w : [])
     } catch (e) {}
   }
 
   const loadData = async () => {
     try {
       const [s, a] = await Promise.all([
-        api.get('/stats'),
-        api.get('/auctions')
+        api.get('/stats').catch(() => null),
+        api.get('/auctions').catch(() => [])
       ])
-      setStats(s)
-      setAuctions(a)
+      setStats(s && typeof s === 'object' ? s : null)
+      setAuctions(Array.isArray(a) ? a : [])
     } catch (e) {
       console.error(e)
     }
@@ -246,7 +246,7 @@ const Home = ({ user }) => {
           </Col>
           <Col xs={24} sm={12} lg={6}>
             <Card className="stat-card">
-              <div className="number" style={{ color: '#ff4757' }}>{stats.top5.length}</div>
+              <div className="number" style={{ color: '#ff4757' }}>{(stats.top5 || []).length}</div>
               <div className="label"><EyeOutlined /> 热门拍品 TOP5</div>
             </Card>
           </Col>

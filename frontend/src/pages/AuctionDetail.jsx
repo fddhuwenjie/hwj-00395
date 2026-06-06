@@ -47,23 +47,23 @@ const AuctionDetail = ({ user, setUser }) => {
   const loadBids = async () => {
     try {
       const b = await api.get(`/auctions/${id}/bids`)
-      setBids(b)
+      setBids(Array.isArray(b) ? b : [])
     } catch (e) {}
   }
 
   const loadStatuses = async () => {
-    if (!user) return
+    if (!user || !auction?.sellerId) return
     try {
       const [f, w, rs, sr] = await Promise.all([
-        api.get('/favorites'),
-        api.get('/watchlist'),
+        api.get('/favorites').catch(() => []),
+        api.get('/watchlist').catch(() => []),
         api.get(`/auctions/${id}/review-status`).catch(() => ({})),
-        api.get(`/users/${auction?.sellerId}/reviews`).catch(() => [])
+        api.get(`/users/${auction.sellerId}/reviews`).catch(() => [])
       ])
-      setFavorited(f.includes(Number(id)))
-      setWatched(w.includes(Number(id)))
-      setReviewStatus(rs || {})
-      setSellerReviews(sr || [])
+      setFavorited(Array.isArray(f) ? f.includes(id) || f.includes(Number(id)) : false)
+      setWatched(Array.isArray(w) ? w.includes(id) || w.includes(Number(id)) : false)
+      setReviewStatus(rs && typeof rs === 'object' ? rs : {})
+      setSellerReviews(Array.isArray(sr) ? sr : [])
     } catch (e) {}
   }
 
@@ -273,17 +273,17 @@ const AuctionDetail = ({ user, setUser }) => {
               <span style={{ color: '#d4af37', fontWeight: 600, fontSize: 24, fontFamily: '"Playfair Display", serif' }}>
                 {(auction.sellerCreditScore || 5).toFixed(1)}
               </span>
-              <span style={{ color: '#6c6c7a', fontSize: 13 }}>基于 {sellerReviews.length} 条评价</span>
+              <span style={{ color: '#6c6c7a', fontSize: 13 }}>基于 {(sellerReviews || []).length} 条评价</span>
             </div>
           </div>
           <Button className="gold-btn" icon={<FlagOutlined />} onClick={() => setReportModal(true)}>举报违规</Button>
         </div>
       </div>
 
-      {sellerReviews.length === 0 ? (
+      {(sellerReviews || []).length === 0 ? (
         <Empty description="暂无评价" style={{ color: '#6c6c7a' }} />
       ) : (
-        sellerReviews.map(r => (
+        (sellerReviews || []).map(r => (
           <div key={r.id} className="review-item">
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Avatar size={36} src={r.reviewerAvatar} style={{ border: '1px solid rgba(212, 175, 55, 0.3)' }} />
@@ -364,12 +364,12 @@ const AuctionDetail = ({ user, setUser }) => {
         </div>
       </div>
 
-      {delayRecords.length === 0 ? (
+      {(delayRecords || []).length === 0 ? (
         <Empty description="暂无延时记录" style={{ color: '#6c6c7a' }} />
       ) : (
-        delayRecords.map((r, idx) => (
+        (delayRecords || []).map((r, idx) => (
           <div key={r.id || idx} className="delay-history-item">
-            <div className="delay-number">#{r.delayNumber || delayRecords.length - idx}</div>
+            <div className="delay-number">#{r.delayNumber || (delayRecords || []).length - idx}</div>
             <div>
               <div style={{ color: '#f5f5f5' }}>
                 <Avatar size={22} src={r.triggerUserAvatar} style={{ marginRight: 8 }} />
@@ -467,10 +467,10 @@ const AuctionDetail = ({ user, setUser }) => {
           </Card>
 
           <Card className="luxury-card" title={<span style={{ fontFamily: '"Playfair Display", serif' }}>出价记录 ({auction.bidCount})</span>} style={{ marginTop: 24 }}>
-            {bids.length === 0 ? (
+            {(bids || []).length === 0 ? (
               <Empty description="暂无出价" style={{ color: '#6c6c7a' }} />
             ) : (
-              bids.map(b => (
+              (bids || []).map(b => (
                 <div className="bid-record" key={b.id}>
                   <Avatar src={b.avatar} size={36} style={{ border: '1px solid rgba(212, 175, 55, 0.2)' }} />
                   <div className="info">

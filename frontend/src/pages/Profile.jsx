@@ -25,22 +25,22 @@ const Profile = ({ user, setUser }) => {
   const loadAll = async () => {
     try {
       const [a, b, w, t, f, wt, mr, cr] = await Promise.all([
-        api.get('/my/auctions'),
-        api.get('/my/bids'),
-        api.get('/my/won'),
-        api.get('/my/transactions'),
+        api.get('/my/auctions').catch(() => []),
+        api.get('/my/bids').catch(() => []),
+        api.get('/my/won').catch(() => []),
+        api.get('/my/transactions').catch(() => []),
         api.get('/favorites').catch(() => []),
         api.get('/watchlist').catch(() => []),
         api.get(`/users/${user.id}/reviews`).catch(() => []),
         api.get(`/users/${user.id}/credit`).catch(() => ({ score: 5 }))
       ])
-      setMyAuctions(a)
-      setMyBids(b)
-      setMyWon(w)
-      setTransactions(t)
-      setFavorites(f)
-      setWatchlist(wt)
-      setMyReviews(mr)
+      setMyAuctions(Array.isArray(a) ? a : [])
+      setMyBids(Array.isArray(b) ? b : [])
+      setMyWon(Array.isArray(w) ? w : [])
+      setTransactions(Array.isArray(t) ? t : [])
+      setFavorites(Array.isArray(f) ? f : [])
+      setWatchlist(Array.isArray(wt) ? wt : [])
+      setMyReviews(Array.isArray(mr) ? mr : [])
       setCreditScore(cr?.score ?? 5)
     } catch (e) {
       if (e.error === '未登录') navigate('/login')
@@ -91,9 +91,9 @@ const Profile = ({ user, setUser }) => {
     ) }
   ]
 
-  const renderAuctionList = (items, emptyText) => items.length === 0 ? <Empty description={emptyText} /> : (
+  const renderAuctionList = (items, emptyText) => (items || []).length === 0 ? <Empty description={emptyText} /> : (
     <Row gutter={[16, 16]}>
-      {items.map(item => (
+      {(items || []).map(item => (
         <Col xs={24} sm={12} lg={8} xl={6} key={item.id}>
           <Card
             className="auction-card small"
@@ -121,12 +121,12 @@ const Profile = ({ user, setUser }) => {
 
   const tabItems = [
     {
-      key: 'published', label: <span><RiseOutlined /> 我发布的 ({myAuctions.length})</span>, children: myAuctions.length === 0 ? <Empty description="还没有发布任何拍品" /> : (
-        <Table columns={myAuctionColumns} dataSource={myAuctions} rowKey="id" pagination={{ pageSize: 5 }} />
+      key: 'published', label: <span><RiseOutlined /> 我发布的 ({(myAuctions || []).length})</span>, children: (myAuctions || []).length === 0 ? <Empty description="还没有发布任何拍品" /> : (
+        <Table columns={myAuctionColumns} dataSource={myAuctions || []} rowKey="id" pagination={{ pageSize: 5 }} />
       )
     },
     {
-      key: 'bidding', label: <span><ShoppingCartOutlined /> 我参与竞价的 ({myBids.length})</span>, children: myBids.length === 0 ? <Empty description="还没有参与任何竞价" /> : (
+      key: 'bidding', label: <span><ShoppingCartOutlined /> 我参与竞价的 ({(myBids || []).length})</span>, children: (myBids || []).length === 0 ? <Empty description="还没有参与任何竞价" /> : (
         <Table
           rowKey="id"
           pagination={{ pageSize: 5 }}
@@ -137,21 +137,21 @@ const Profile = ({ user, setUser }) => {
             { title: '当前价', dataIndex: 'currentPrice', width: 140, render: (v, r) => <b style={{ color: v > r.myMaxBid ? '#ff4757' : '#2ed573' }}>{formatPrice(v)}</b> },
             { title: '状态', dataIndex: 'status', width: 100, render: s => <StatusBadge status={s} /> }
           ]}
-          dataSource={myBids}
+          dataSource={myBids || []}
         />
       )
     },
     {
-      key: 'won', label: <span><TrophyOutlined /> 我拍得的 ({myWon.length})</span>, children: renderAuctionList(myWon, '还没有拍得任何商品')
+      key: 'won', label: <span><TrophyOutlined /> 我拍得的 ({(myWon || []).length})</span>, children: renderAuctionList(myWon, '还没有拍得任何商品')
     },
     {
-      key: 'favorites', label: <span><HeartOutlined /> 我的收藏 ({favorites.length})</span>, children: renderAuctionList(favorites, '还没有收藏任何拍品')
+      key: 'favorites', label: <span><HeartOutlined /> 我的收藏 ({(favorites || []).length})</span>, children: renderAuctionList(favorites, '还没有收藏任何拍品')
     },
     {
-      key: 'watchlist', label: <span><EyeOutlined /> 我的关注 ({watchlist.length})</span>, children: renderAuctionList(watchlist, '还没有关注任何拍品')
+      key: 'watchlist', label: <span><EyeOutlined /> 我的关注 ({(watchlist || []).length})</span>, children: renderAuctionList(watchlist, '还没有关注任何拍品')
     },
     {
-      key: 'reviews', label: <span><StarFilled /> 我的评价 ({myReviews.length})</span>, children: (
+      key: 'reviews', label: <span><StarFilled /> 我的评价 ({(myReviews || []).length})</span>, children: (
         <div>
           <div style={{ padding: 24, background: 'rgba(212, 175, 55, 0.06)', borderRadius: 8, border: '1px solid rgba(212, 175, 55, 0.15)', marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
@@ -171,10 +171,10 @@ const Profile = ({ user, setUser }) => {
               )}
             </div>
           </div>
-          {myReviews.length === 0 ? (
+          {(myReviews || []).length === 0 ? (
             <Empty description="暂无评价" style={{ color: '#6c6c7a' }} />
           ) : (
-            myReviews.map(r => (
+            (myReviews || []).map(r => (
               <div key={r.id} className="review-item">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <Avatar size={36} src={r.reviewerAvatar} style={{ border: '1px solid rgba(212, 175, 55, 0.3)' }} />
@@ -197,8 +197,8 @@ const Profile = ({ user, setUser }) => {
       )
     },
     {
-      key: 'transactions', label: <span><HistoryOutlined /> 交易记录 ({transactions.length})</span>, children: transactions.length === 0 ? <Empty description="暂无交易记录" /> : (
-        <Table columns={txColumns} dataSource={transactions} rowKey="id" pagination={{ pageSize: 10 }} />
+      key: 'transactions', label: <span><HistoryOutlined /> 交易记录 ({(transactions || []).length})</span>, children: (transactions || []).length === 0 ? <Empty description="暂无交易记录" /> : (
+        <Table columns={txColumns} dataSource={transactions || []} rowKey="id" pagination={{ pageSize: 10 }} />
       )
     }
   ]
@@ -222,9 +222,9 @@ const Profile = ({ user, setUser }) => {
               <CreditScore score={creditScore} />
               <span style={{ color: creditScore >= 3 ? '#d4af37' : '#ff4757', fontWeight: 600 }}>{creditScore.toFixed(1)}</span>
               </div>
-              <Tag color="gold" className="gold-tag">已发布 {myAuctions.length}</Tag>
-              <Tag color="gold" className="gold-tag">收藏 {favorites.length}</Tag>
-              <Tag color="gold" className="gold-tag">关注 {watchlist.length}</Tag>
+              <Tag color="gold" className="gold-tag">已发布 {(myAuctions || []).length}</Tag>
+              <Tag color="gold" className="gold-tag">收藏 {(favorites || []).length}</Tag>
+              <Tag color="gold" className="gold-tag">关注 {(watchlist || []).length}</Tag>
             </div>
           </Col>
           <Col xs={24} sm={24} lg="auto">
@@ -262,10 +262,10 @@ const Profile = ({ user, setUser }) => {
         footer={null}
         width={600}
       >
-        {bidHistory && bidHistory.length === 0 ? (
+        {(bidHistory || []).length === 0 ? (
           <Empty description="暂无出价" />
         ) : (
-          bidHistory?.map(b => (
+          (bidHistory || []).map(b => (
             <div className="bid-record" key={b.id}>
               <Avatar src={b.avatar} size={36} />
               <div className="info">
